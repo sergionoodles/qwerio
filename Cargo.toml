@@ -1,0 +1,28 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+default-members = ["crates/qwerio-desktop"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+qwerio-core = { path = "crates/qwerio-core" }
+qwerio-postgres = { path = "crates/qwerio-postgres" }
+qwerio-sqlite = { path = "crates/qwerio-sqlite" }
+qwerio-workspace = { path = "crates/qwerio-workspace" }
+qwerio-app = { path = "crates/qwerio-app" }
+
+gpui-kit = { version = "0.7.3" }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+unwrap_used = "warn"

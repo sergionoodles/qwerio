@@ -1,0 +1,24 @@
+[package]
+name = "qwerio-core"
+description = "Engine-neutral database contracts: resources, values, filters, results, capabilities, and errors."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait = "0.1.89"
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.48", default-features = false, features = ["sync"] }
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+[features]
+# The engine-neutral contract suite that every adapter's tests run.
+contract-tests = ["tokio/time"]
+
+[dev-dependencies]
+tokio = { version = "1.48", features = ["rt", "macros"] }
+
+[lints]
+workspace = true

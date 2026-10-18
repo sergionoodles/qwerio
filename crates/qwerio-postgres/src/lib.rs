@@ -1,0 +1,167 @@
+//! PostgreSQL adapter for the Qwerio database contracts.
+//!
+//! All network work runs on a Tokio runtime supplied at construction; callers
+//! may await the adapter from any executor. Databases and schemas are separate
+//! catalog levels: each session connects to one database, and listing the
+//! connection root returns the server's databases.
+
+mod catalog;
+mod connect;
+mod decode;
+mod dialect;
+mod error;
+mod execute;
+mod session;
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use qwerio_core::capabilities::{CancellationSupport, DatabaseCapabilities};
+use qwerio_core::connection::{ConnectionOptions, EngineKind, TlsMode};
+use qwerio_core::driver::{DatabaseDriver, DatabaseSession, OpenSessionRequest, ValidationIssue};
+use qwerio_core::error::{DatabaseError, DbResult};
+use qwerio_core::filter::FilterOperator;
+use qwerio_core::ids::SessionId;
+use qwerio_core::session::{AccessMode, ReadOnlyEnforcement, SessionInfo};
+use tokio::runtime::Handle;
+
+use crate::connect::{ConnectRequest, connect};
+use crate::session::{PostgresSession, SessionParts};
+
+pub struct PostgresDriver {
+    runtime: Handle,
+    capabilities: DatabaseCapabilities,
+}
+
+impl PostgresDriver {
+    /// `runtime` drives connections and queries; it must outlive the sessions.
+    pub fn new(runtime: Handle) -> Self {
+        Self {
+            runtime,
+            capabilities: DatabaseCapabilities {
+                has_databases: true,
+                has_namespaces: true,
+                access_modes: vec![AccessMode::ReadOnly, AccessMode::ReadWrite],
+                read_only_enforcement: ReadOnlyEnforcement::TransactionDefault,
+                transactional_ddl: true,
+                cancellation: CancellationSupport::ServerCancelRequest,
+                filter_operators: FilterOperator::ALL.to_vec(),
+                unicode_case_folding: true,
+                errors_abort_transactions: true,
+            },
+        }
+    }
+}
+
+#[async_trait]
+impl DatabaseDriver for PostgresDriver {
+    fn engine(&self) -> EngineKind {
+        EngineKind::Postgres
+    }
+
+    fn capabilities(&self) -> &DatabaseCapabilities {
+        &self.capabilities
+    }
+
+    fn validate(&self, options: &ConnectionOptions) -> Vec<ValidationIssue> {
+        let ConnectionOptions::Postgres(options) = options else {
+            return vec![ValidationIssue {
+                field: "engine",
+                message: "These options are not for PostgreSQL".to_owned(),
+            }];
+        };
+
+        let mut issues = Vec::new();
+        let mut require = |field: &'static str, value: &str, label: &str| {
+            if value.trim().is_empty() {
+                issues.push(ValidationIssue {
+                    field,
+                    message: format!("Enter a {label}"),
+                });
+            }
+        };
+
+        require("host", &options.host, "host");
+        require("user", &options.user, "user name");
+        require("database", &options.database, "database name");
+
+        if options.port == 0 {
+            issues.push(ValidationIssue {
+                field: "port",
+                message: "Enter a port between 1 and 65535".to_owned(),
+            });
+        }
+
+        if options.is_unix_socket() && matches!(options.tls, TlsMode::VerifyFull { .. }) {
+            issues.push(ValidationIssue {
+                field: "tls",
+                message: "Unix socket connections do not use TLS".to_owned(),
+            });
+        }
+
+        issues
+    }
+
+    async fn open(&self, request: OpenSessionRequest) -> DbResult<Arc<dyn DatabaseSession>> {
+        let ConnectionOptions::Postgres(options) = request.connection.options.clone() else {
+            return Err(DatabaseError::invalid_request(
+                "These options are not for PostgreSQL",
+            ));
+        };
+
+        if let Some(issue) = self.validate(&request.connection.options).first() {
+            return Err(DatabaseError::invalid_request(issue.message.clone()));
+        }
+
+        let database = request
+            .database
+            .clone()
+            .unwrap_or_else(|| options.database.clone());
+        let credentials = request.credentials.clone();
+        let purpose = request.purpose;
+        let access = request.access;
+        let connect_database = database.clone();
+
+        let connected = self
+            .runtime
+            .spawn(async move {
+                connect(ConnectRequest {
+                    options: &options,
+                    credentials: &credentials,
+                    database: &connect_database,
+                    purpose,
+                    access,
+                })
+                .await
+            })
+            .await
+            .map_err(|error| {
+                DatabaseError::internal(format!("The connect task failed: {error}"))
+            })??;
+
+        let enforcement = match access {
+            AccessMode::ReadOnly => ReadOnlyEnforcement::TransactionDefault,
+            AccessMode::ReadWrite => ReadOnlyEnforcement::NotEnforced,
+        };
+
+        let info = SessionInfo {
+            id: SessionId::new(),
+            connection: request.connection.id,
+            engine: EngineKind::Postgres,
+            database: Some(database),
+            purpose,
+            requested_access: access,
+            enforcement,
+            server_version: connected.server_version,
+            foreign_keys_enforced: None,
+        };
+
+        Ok(Arc::new(PostgresSession::new(SessionParts {
+            info,
+            runtime: self.runtime.clone(),
+            client: connected.client,
+            cancel_token: connected.cancel_token,
+            tls: connected.tls,
+        })))
+    }
+}

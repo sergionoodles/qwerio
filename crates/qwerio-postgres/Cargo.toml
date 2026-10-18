@@ -1,0 +1,29 @@
+[package]
+name = "qwerio-postgres"
+description = "PostgreSQL adapter: connections, catalog discovery, dialect SQL, value decoding, sessions, and cancellation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait = "0.1.89"
+# Matches the iterator trait postgres-protocol uses for array values.
+fallible-iterator = "0.2"
+futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
+postgres-protocol = "0.6.10"
+qwerio-core.workspace = true
+rustls = { version = "0.23.31", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-platform-verifier = "0.7.1"
+tokio = { version = "1.48", features = ["rt", "net", "time", "sync"] }
+tokio-postgres = "0.7.18"
+tokio-postgres-rustls = { version = "0.14.0", features = ["ring"] }
+
+[dev-dependencies]
+qwerio-core = { workspace = true, features = ["contract-tests"] }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time"] }
+tokio-postgres = "0.7.18"
+
+[lints]
+workspace = true

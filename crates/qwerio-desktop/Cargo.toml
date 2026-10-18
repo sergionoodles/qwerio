@@ -1,0 +1,33 @@
+[package]
+name = "qwerio-desktop"
+description = "Qwerio desktop application: startup, GPUI views, themes, and OS integration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "qwerio"
+path = "src/main.rs"
+
+[dependencies]
+directories = "6.0"
+gpui-kit = { workspace = true, features = ["tree-sitter-sql", "tree-sitter-markdown"] }
+keyring = "4.2"
+notify = "8.2"
+qwerio-app.workspace = true
+qwerio-core.workspace = true
+qwerio-postgres.workspace = true
+qwerio-sqlite.workspace = true
+qwerio-workspace.workspace = true
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+tokio = { version = "1.48", features = ["rt-multi-thread", "sync"] }
+toml = "1.1"
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lints]
+workspace = true

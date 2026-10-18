@@ -1,0 +1,22 @@
+[package]
+name = "qwerio-workspace"
+description = "Workspace manifest persistence, documents, file watching, associations, and explorer entries."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+notify = "8.2"
+qwerio-core.workspace = true
+serde = { version = "1.0.228", features = ["derive"] }
+thiserror = "2.0.17"
+toml = "1.1"
+uuid = { version = "1.18", features = ["v4", "serde"] }
+
+[dev-dependencies]
+tempfile = "3.23"
+
+[lints]
+workspace = true

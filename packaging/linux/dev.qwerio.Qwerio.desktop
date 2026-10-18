@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Qwerio
+GenericName=Database Workspace
+Comment=Browse databases beside your queries and notes
+Exec=qwerio %f
+Terminal=false
+Categories=Development;Database;
+StartupWMClass=dev.qwerio.Qwerio
+Keywords=database;sql;postgresql;sqlite;
+MimeType=inode/directory;
