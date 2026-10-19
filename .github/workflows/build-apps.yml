@@ -1,6 +1,6 @@
-# Builds unsigned Qwerio apps: an AppImage for Linux, a universal DMG for
-# macOS, and an MSI plus a portable zip for Windows. Packages are uploaded as
-# workflow artifacts; pushing a v* tag also attaches them to a draft release.
+# Builds unsigned Qwerio apps: an AppImage for Linux and a universal DMG for
+# macOS. Packages are uploaded as workflow artifacts; pushing a v* tag also
+# attaches them to a draft release.
 name: Build apps
 
 on:
@@ -38,7 +38,6 @@ jobs:
           name: application-icons
           path: |
             packaging/icons/qwerio-*.png
-            packaging/icons/qwerio.ico
           if-no-files-found: error
 
   linux:
@@ -117,47 +116,10 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
-  windows:
-    name: Windows MSI
-    needs: icons
-    runs-on: windows-2025
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: application-icons
-          path: packaging/icons
-
-      - name: Install the pinned Rust toolchain
-        shell: bash
-        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
-
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-
-      # WiX 5 is MS-RL licensed; WiX 6 and later need an EULA acceptance.
-      - name: Install WiX Toolset
-        run: |
-          dotnet tool install --global wix --version 5.0.2
-          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.dotnet\tools"
-
-      - name: Build
-        run: cargo build --release --locked --package qwerio-desktop
-
-      - name: Package
-        shell: pwsh
-        run: scripts/package-windows.ps1 -Binary target/release/qwerio.exe -Output dist
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: qwerio-windows
-          path: dist/*
-          if-no-files-found: error
-
   release:
     name: Draft release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, macos, windows]
+    needs: [linux, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write

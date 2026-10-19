@@ -1,5 +1,5 @@
-//! Credential storage in the platform keychain: Keychain on macOS, the
-//! Credential Manager on Windows, and the Secret Service on Linux.
+//! Credential storage in the platform keychain: Keychain on macOS and the
+//! Secret Service on Linux.
 
 use qwerio_app::AppError;
 use qwerio_app::AppResult;

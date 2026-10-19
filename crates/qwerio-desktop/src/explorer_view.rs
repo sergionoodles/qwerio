@@ -73,6 +73,7 @@ pub struct ExplorerView {
     filter: String,
     layout: ExplorerLayout,
     selected_key: Option<String>,
+    context_entry: Option<ExplorerEntry>,
     focus_handle: FocusHandle,
     scroll_handle: UniformListScrollHandle,
     _model_subscription: Subscription,
@@ -97,6 +98,7 @@ impl ExplorerView {
             filter: String::new(),
             layout,
             selected_key: None,
+            context_entry: None,
             focus_handle: cx.focus_handle(),
             scroll_handle: UniformListScrollHandle::new(),
             _model_subscription: subscription,
@@ -479,10 +481,6 @@ impl ExplorerView {
             entry.status,
             EntryStatus::NoPrivilege | EntryStatus::Untracked
         );
-        let this = cx.entity().downgrade();
-        let model = self.model.clone();
-        let menu_entry = entry.clone();
-
         h_flex()
             .id(SharedString::from(entry.key.clone()))
             .w_full()
@@ -498,11 +496,7 @@ impl ExplorerView {
                 row.hover(|style| style.bg(cx.theme().list_hover))
             })
             .when(is_muted, |row| row.text_color(cx.theme().muted_foreground))
-            .child(
-                entry_icon(entry.kind)
-                    .small()
-                    .text_color(cx.theme().muted_foreground),
-            )
+            .child(entry_icon(entry.kind, cx).small())
             .child(
                 div()
                     .flex_1()
@@ -522,6 +516,9 @@ impl ExplorerView {
                 )
             })
             .children(Self::render_status_badge(&entry, cx))
+            .on_any_mouse_down(cx.listener(move |this, _, _, _| {
+                this.context_entry = this.entries.get(index).cloned();
+            }))
             .on_click(cx.listener(move |this, event, window, cx| {
                 this.on_row_click(index, event, window, cx)
             }))
@@ -529,16 +526,6 @@ impl ExplorerView {
             .aria_label(entry.name.clone())
             .aria_selected(is_selected)
             .test_support()
-            .context_menu(move |menu, window, cx| {
-                Self::entry_menu(
-                    this.clone(),
-                    model.clone(),
-                    menu_entry.clone(),
-                    menu,
-                    window,
-                    cx,
-                )
-            })
             .into_any_element()
     }
 
@@ -549,10 +536,6 @@ impl ExplorerView {
         is_selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let this = cx.entity().downgrade();
-        let model = self.model.clone();
-        let menu_entry = entry.clone();
-
         v_flex()
             .id(SharedString::from(entry.key.clone()))
             .w_32()
@@ -564,11 +547,7 @@ impl ExplorerView {
             .when(!is_selected, |tile| {
                 tile.hover(|style| style.bg(cx.theme().list_hover))
             })
-            .child(
-                entry_icon(entry.kind)
-                    .large()
-                    .text_color(cx.theme().muted_foreground),
-            )
+            .child(entry_icon(entry.kind, cx).large())
             .child(
                 div()
                     .w_full()
@@ -578,6 +557,9 @@ impl ExplorerView {
                     .child(entry.name.clone()),
             )
             .children(Self::render_status_badge(&entry, cx))
+            .on_any_mouse_down(cx.listener(move |this, _, _, _| {
+                this.context_entry = this.entries.get(index).cloned();
+            }))
             .on_click(cx.listener(move |this, event, window, cx| {
                 this.on_row_click(index, event, window, cx)
             }))
@@ -585,16 +567,6 @@ impl ExplorerView {
             .aria_label(entry.name.clone())
             .aria_selected(is_selected)
             .test_support()
-            .context_menu(move |menu, window, cx| {
-                Self::entry_menu(
-                    this.clone(),
-                    model.clone(),
-                    menu_entry.clone(),
-                    menu,
-                    window,
-                    cx,
-                )
-            })
             .into_any_element()
     }
 
@@ -684,7 +656,8 @@ impl Focusable for ExplorerView {
 impl Render for ExplorerView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected_index();
-        let background_this = cx.entity().downgrade();
+        let this = cx.entity().downgrade();
+        let model = self.model.clone();
 
         let body = if self.entries.is_empty() {
             self.render_empty(cx).into_any_element()
@@ -742,6 +715,11 @@ impl Render for ExplorerView {
             .track_focus(&self.focus_handle)
             .size_full()
             .min_h_0()
+            .test_support()
+            // Clear before row handlers run, so empty space cannot reuse an entry menu.
+            .capture_any_mouse_down(cx.listener(|this, _, _, _| {
+                this.context_entry = None;
+            }))
             .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| this.move_selection(-1, cx)))
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.move_selection(1, cx)))
             .on_action(cx.listener(|this, _: &SelectFirst, _, cx| this.select_index(0, cx)))
@@ -758,6 +736,17 @@ impl Render for ExplorerView {
                 cx.emit(ContentEvent::AddFavorite(location));
             }))
             .child(body)
-            .context_menu(move |menu, _, _| Self::background_menu(background_this.clone(), menu))
+            .context_menu(move |menu, window, cx| {
+                let entry = this
+                    .upgrade()
+                    .and_then(|view| view.read(cx).context_entry.clone());
+
+                match entry {
+                    Some(entry) => {
+                        Self::entry_menu(this.clone(), model.clone(), entry, menu, window, cx)
+                    }
+                    None => Self::background_menu(this.clone(), menu),
+                }
+            })
     }
 }

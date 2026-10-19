@@ -34,6 +34,3 @@ tempfile = "3.23"
 
 [lints]
 workspace = true
-
-[build-dependencies]
-embed-resource = "3"

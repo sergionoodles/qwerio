@@ -1,25 +1,23 @@
 //! The workspace toolbar: navigation and breadcrumbs, then commands grouped
-//! the way file managers group them. Creating things lives in one "New"
-//! menu whose items follow the focused location.
+//! the way file managers group them. Buttons that create database objects
+//! are enabled only where the focused location allows them.
 
 use gpui_kit::assets::IconName as LucideIcon;
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu};
+use gpui_kit::component::separator::Separator;
 use gpui_kit::component::toolbar::{Toolbar, ToolbarGroup};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{
-    AnyElement, Context, FocusHandle, IntoElement, ParentElement as _, Styled as _, Window, div,
-};
+use gpui_kit::{Context, IntoElement, ParentElement as _, Styled as _, Window, div};
 use qwerio_app::navigation::ViewState;
-use qwerio_app::schema::SchemaTargets;
+use qwerio_core::resource::ObjectKind;
 use qwerio_workspace::document::DocumentKind;
-use qwerio_workspace::explorer::breadcrumbs;
+use qwerio_workspace::explorer::{EntryKind, breadcrumbs};
 
 use super::{TabContent, WorkspaceShell};
-use crate::actions::*;
-use crate::content::document_icon;
+use crate::connection_dialog;
+use crate::content::{document_icon, entry_icon, object_icon};
 use crate::explorer_view::ExplorerLayout;
 
 impl WorkspaceShell {
@@ -62,9 +60,8 @@ impl WorkspaceShell {
                     .on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))),
             );
 
-        let commands = ToolbarGroup::new("toolbar-commands")
-            .label("Commands")
-            .content(self.render_new_menu(cx))
+        let view = ToolbarGroup::new("toolbar-view")
+            .label("View")
             .child(
                 Button::new("refresh")
                     .ghost()
@@ -98,7 +95,11 @@ impl WorkspaceShell {
                     .px_2()
                     .child(self.render_breadcrumb(cx)),
             )
-            .child(commands)
+            .child(self.render_schema_group(cx))
+            .content(group_separator())
+            .child(self.render_workspace_group(cx))
+            .content(group_separator())
+            .child(view)
     }
 
     fn render_breadcrumb(&self, cx: &mut Context<Self>) -> Breadcrumb {
@@ -123,20 +124,85 @@ impl WorkspaceShell {
             })
     }
 
-    /// Database objects first (each enabled only where it can be created),
-    /// then workspace files, then connections.
-    fn render_new_menu(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// Database objects, each enabled only where it can be created.
+    fn render_schema_group(&self, cx: &mut Context<Self>) -> ToolbarGroup {
         let targets = self.schema_targets(cx);
-        let focus = self.focus_handle.clone();
 
-        Button::new("new-menu")
-            .ghost()
-            .small()
-            .icon(IconName::Plus)
-            .label("New")
-            .dropdown_caret(true)
-            .dropdown_menu(move |menu, _, _| new_menu(menu, &targets, focus.clone()))
-            .into_any_element()
+        ToolbarGroup::new("toolbar-schema")
+            .label("Database objects")
+            .child(
+                Button::new("new-database")
+                    .ghost()
+                    .icon(entry_icon(EntryKind::Database, cx))
+                    .tooltip("New Database")
+                    .disabled(targets.database.is_none())
+                    .on_click(cx.listener(|this, _, window, cx| this.new_database(window, cx))),
+            )
+            .child(
+                Button::new("new-table")
+                    .ghost()
+                    .icon(object_icon(ObjectKind::Table, cx))
+                    .tooltip("New Table")
+                    .disabled(targets.table.is_none())
+                    .on_click(cx.listener(|this, _, window, cx| this.new_table(window, cx))),
+            )
+            .child(
+                Button::new("new-column")
+                    .ghost()
+                    .icon(Icon::new(LucideIcon::Columns3).text_color(cx.theme().yellow))
+                    .tooltip("New Column")
+                    .disabled(targets.column.is_none())
+                    .on_click(cx.listener(|this, _, window, cx| this.new_column(window, cx))),
+            )
+    }
+
+    /// Workspace files and connections.
+    fn render_workspace_group(&self, cx: &mut Context<Self>) -> ToolbarGroup {
+        ToolbarGroup::new("toolbar-workspace")
+            .label("Workspace")
+            .child(
+                Button::new("new-query")
+                    .ghost()
+                    .icon(Icon::new(LucideIcon::ScrollText).text_color(cx.theme().magenta))
+                    .tooltip("New Temporary Query")
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.new_temporary_query(window, cx)),
+                    ),
+            )
+            .child(
+                Button::new("new-sql-document")
+                    .ghost()
+                    .icon(document_icon(DocumentKind::Sql, cx))
+                    .tooltip("New SQL Document")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.new_document(DocumentKind::Sql, None, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("new-note")
+                    .ghost()
+                    .icon(document_icon(DocumentKind::Markdown, cx))
+                    .tooltip("New Note")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.new_document(DocumentKind::Markdown, None, window, cx)
+                    })),
+            )
+            .child(
+                Button::new("new-folder")
+                    .ghost()
+                    .icon(Icon::new(LucideIcon::FolderPlus).text_color(cx.theme().yellow))
+                    .tooltip("New Folder")
+                    .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx))),
+            )
+            .child(
+                Button::new("new-connection")
+                    .ghost()
+                    .icon(Icon::new(LucideIcon::Plug).text_color(cx.theme().blue))
+                    .tooltip("New Connection")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        connection_dialog::open(this.model.clone(), None, window, cx)
+                    })),
+            )
     }
 
     fn render_layout_toggle(&self, cx: &mut Context<Self>) -> Option<Button> {
@@ -165,51 +231,6 @@ impl WorkspaceShell {
     }
 }
 
-fn new_menu(menu: PopupMenu, targets: &SchemaTargets, focus: FocusHandle) -> PopupMenu {
-    menu.action_context(focus)
-        .menu_with_icon_and_disabled(
-            "Database…",
-            Icon::new(LucideIcon::Database),
-            Box::new(NewDatabase),
-            targets.database.is_none(),
-        )
-        .menu_with_icon_and_disabled(
-            "Table…",
-            Icon::new(LucideIcon::Table),
-            Box::new(NewTable),
-            targets.table.is_none(),
-        )
-        .menu_with_icon_and_disabled(
-            "Column…",
-            Icon::new(LucideIcon::Columns3),
-            Box::new(NewColumn),
-            targets.column.is_none(),
-        )
-        .separator()
-        .menu_with_icon(
-            "Temporary Query",
-            Icon::new(LucideIcon::ScrollText),
-            Box::new(NewTemporaryQuery),
-        )
-        .menu_with_icon(
-            "SQL Document",
-            document_icon(DocumentKind::Sql),
-            Box::new(NewSqlDocument),
-        )
-        .menu_with_icon(
-            "Note",
-            document_icon(DocumentKind::Markdown),
-            Box::new(NewNote),
-        )
-        .menu_with_icon(
-            "Folder",
-            Icon::new(LucideIcon::FolderPlus),
-            Box::new(NewFolder),
-        )
-        .separator()
-        .menu_with_icon(
-            "Connection…",
-            Icon::new(LucideIcon::Plug),
-            Box::new(NewConnection),
-        )
+fn group_separator() -> Separator {
+    Separator::vertical().h_4().mx_1()
 }

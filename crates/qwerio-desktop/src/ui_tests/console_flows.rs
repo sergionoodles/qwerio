@@ -6,9 +6,6 @@ use gpui_kit::test::TestWindowExt as _;
 use super::*;
 
 const TARGET_LABEL: &str = "Shop data (SQLite)";
-/// At the workspace root the New menu's database items are disabled: the
-/// first press selects the top item, the second skips to the temporary query.
-const TEMPORARY_QUERY_STEPS: usize = 2;
 
 /// Opens a temporary query, types `sql` into its editor (focused when the
 /// query opens), chooses the shop connection and `access`, and runs it with
@@ -22,10 +19,10 @@ fn run_in_new_query(
     init_app(fixture.services.clone(), cx);
     let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
     wait_until(window, cx, "the workspace opens", |window, _| {
-        window.try_find("new-menu").is_some()
+        window.try_find("new-query").is_some()
     });
 
-    choose_menu_item(window, cx, "new-menu", TEMPORARY_QUERY_STEPS);
+    interact(window, cx, |window, cx| window.click("new-query", cx));
     wait_until(window, cx, "the query opens", |window, _| {
         window.try_find("console-target").is_some()
     });

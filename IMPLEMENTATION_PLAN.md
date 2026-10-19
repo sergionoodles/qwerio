@@ -13,8 +13,8 @@ database objects in the same explorer.
 The first iteration includes:
 
 - PostgreSQL and SQLite as equally supported database engines.
-- Linux, macOS, and Windows support; Linux/Omarchy and macOS are the primary design
-  references. Windows remains a release requirement.
+- Linux and macOS support only; Linux/Omarchy and macOS are the primary design
+  references.
 - Connection management, schema discovery, table/view browsing, column filters,
   sorting, record details, and declared foreign-key navigation.
 - Mixed database/file navigation, workspace folders, file editing, and associations
@@ -49,9 +49,9 @@ user explicitly opens a writable session; browsing starts read-only.
 
 GPUI draws the main interface. The goal is a consistent visual identity with
 platform-appropriate behavior, rather than automatic use of OS-native widgets.
-The current Kit setup lists macOS 15+, Windows 10+, and Linux with working Vulkan
-drivers; validate the selected release and actual machines before promising a
-minimum OS/GPU baseline. [GPUI Kit installation][kit-install]
+For the supported platforms, the current Kit setup lists macOS 15+ and Linux with
+working Vulkan drivers; validate the selected release and actual machines before
+promising a minimum OS/GPU baseline. [GPUI Kit installation][kit-install]
 
 ## 3. Module boundaries from the first implementation
 
@@ -231,18 +231,16 @@ content before implementing the full shell.
   Treat this integration as a versioned adapter, not a permanent platform API.
   [Omarchy theme switching source][omarchy-theme]
 
-### 5.3 macOS and Windows
+### 5.3 macOS
 
 - macOS: appropriate application menus and Command shortcuts, standard window
   controls, a usable title-bar drag region, Retina rendering, system appearance,
   Keychain-backed credentials, and expected open/save/close behavior.
-- Windows: standard window controls, Control shortcuts, correct per-monitor DPI,
-  file associations, credential storage, and accessible keyboard operation.
-- Prefer native menus where supported. The Kit documents AppKit and Win32 menu
-  adapters; verify behavior instead of assuming every popup is native.
+- Prefer native menus where supported. The Kit documents an AppKit menu
+  adapter; verify behavior instead of assuming every popup is native.
   [Native extensions][kit-native]
-- Test shared components on all three OSes. Platform styling must not fork the
-  database/application layers or become three independent UI implementations.
+- Test shared components on both supported OSes. Platform styling must not fork the
+  database/application layers or become two independent UI implementations.
 
 ## 6. Delivery phases
 
@@ -256,7 +254,7 @@ complete relevant automated checks before the final manual desktop check.
 - Confirm the proposed Rust/Longbridge GPUI Kit stack before scaffolding. Resolve
   current compatible releases and inspect their licenses and feature flags.
 - Run a minimal feasibility spike with a resource list, resizable panels, dynamic
-  columns, editable SQL, and Markdown content on Linux, macOS, and Windows.
+  columns, editable SQL, and Markdown content on Linux and macOS.
 - Validate the lowest supported macOS version and Linux GPU/driver requirements.
   Exercise Hyprland/Wayland early; do not postpone it until release packaging.
 - Prototype both database driver paths: PostgreSQL connection/TLS/stream/cancel and
@@ -285,7 +283,8 @@ complete relevant automated checks before the final manual desktop check.
 - Add a driver registry and a background-task boundary. Define connection/session
   lifecycle, event ordering, shutdown, and cancellation semantics.
 - Create a minimal GPUI shell with real loading, empty, and error states.
-- Set up formatting, linting, unit tests, and a build/check matrix for all OSes.
+- Set up formatting, linting, unit tests, and a build/check matrix for both
+  supported OSes.
 
 **Exit criteria**
 
@@ -359,7 +358,7 @@ complete relevant automated checks before the final manual desktop check.
 
 - Users can open a workspace, connect to either engine, browse mixed resources,
   open a document/table, and return with history using mouse or keyboard.
-- Review the actual shell manually on Omarchy/Hyprland, macOS, and Windows for
+- Review the actual shell manually on Omarchy/Hyprland and macOS for
   density, text rendering, window behavior, and focus. Visual approval is a gate
   before expanding the interface; screenshots alone do not establish usability.
 
@@ -432,20 +431,20 @@ complete relevant automated checks before the final manual desktop check.
   live updates, fallback, explicit overrides, and contrast validation.
 - Finish native menus/dialog integration, credential storage, clipboard, desktop
   entries, file associations, platform directories, and launch/open-file behavior.
-- Run unit/contract/integration checks on all OSes and perform focused manual
-  desktop acceptance checks. A browser is not the verification harness for GPUI.
+- Run unit/contract/integration checks on both supported OSes and perform focused
+  manual desktop acceptance checks. A browser is not the verification harness for GPUI.
 - Profile realistic table/editor workloads, memory budgets, idle activity, and
   shutdown. Production/release builds and packaging require separate authorization.
-- Prepare Linux/Arch-compatible distribution, macOS bundles/signing/notarization,
-  and Windows packaging/signing. Verify the chosen packaging toolchain rather than
-  assuming the GUI framework provides a complete release pipeline.
+- Prepare Linux/Arch-compatible distribution and macOS bundles/signing/notarization.
+  Verify the chosen packaging toolchain rather than assuming the GUI framework
+  provides a complete release pipeline.
 
 **Exit criteria**
 
-- All first-iteration flows pass on Linux, macOS, and Windows, including both engines.
+- All first-iteration flows pass on Linux and macOS, including both engines.
 - Omarchy works in native Wayland, tiled layouts, theme changes, and scaled displays;
-  the app also works without Omarchy. macOS menus/shortcuts/window behavior and
-  Windows DPI/shortcuts are verified on actual target environments.
+  the app also works without Omarchy. macOS menus/shortcuts/window behavior are
+  verified on actual target environments.
 - Large results, cancelled operations, unavailable credentials, SQLite locks,
   network loss, unsaved files, and shutdown have clear recoverable behavior.
 - No release is declared supported based solely on compilation or CI success.
@@ -496,10 +495,10 @@ and platform acceptance checks all pass. AI is outside that completion gate.
   features; `tokio-postgres` 0.7.18 (MIT/Apache-2.0) with
   `tokio-postgres-rustls` 0.14, rustls 0.23 (ring provider), and
   `rustls-platform-verifier` 0.7.1; `rusqlite` 0.40.2 (MIT) with bundled
-  SQLite 3.53.2; `keyring` 4.2 (Keychain, Credential Manager, Secret Service);
+  SQLite 3.53.2; `keyring` 4.2 (Keychain, Secret Service);
   `notify` 8.2; `directories` 6.0. No stack change was needed.
 - **Window:** the GPUI shell opens and runs on Linux under niri (native
-  Wayland) without errors. Hyprland/Omarchy, X11, macOS, and Windows are not
+  Wayland) without errors. Hyprland/Omarchy, X11, and macOS are not
   yet exercised; minimum OS/GPU requirements remain unverified.
 - **Single statements:** both drivers reject extra statements before running
   anything. PostgreSQL's extended-query `Parse` refuses multiple commands;
@@ -579,10 +578,9 @@ and platform acceptance checks all pass. AI is outside that completion gate.
 - `.github/workflows/build-apps.yml` builds unsigned packages on `v*` tags
   and on demand: a Linux AppImage (`scripts/package-linux.sh`, Ubuntu 22.04
   glibc), a universal macOS DMG with an ad-hoc signed app
-  (`scripts/package-macos.sh`), and a Windows MSI (WiX 5) plus portable zip
-  (`scripts/package-windows.ps1`). Tags also create a draft release. The icon
+  (`scripts/package-macos.sh`). Tags also create a draft release. The icon
   in `packaging/icons` is a placeholder; `scripts/generate-icons.sh`
-  regenerates its PNG and ICO renditions.
+  regenerates its PNG renditions.
 
 ### 8.3 Checks
 
@@ -594,11 +592,11 @@ TLS CA). PostgreSQL tests fail with a clear message when run without it.
 ### 8.4 Open before first-iteration acceptance
 
 - Manual desktop review on Omarchy/Hyprland, X11, a mainstream Wayland
-  desktop, macOS, and Windows (the Phase 4 visual gate), including fractional
+  desktop and macOS (the Phase 4 visual gate), including fractional
   scaling, input methods, file portals, and window decorations.
-- macOS/Windows builds have not been compiled or run on those platforms;
+- macOS builds have not been compiled or run on that platform;
   the release workflow has not run yet.
-- Code signing and notarization (Developer ID, Windows Authenticode) are not
+- Code signing and notarization (Developer ID) are not
   set up; packages are unsigned. A homepage URL is missing from the AppStream
   metadata.
 - In the connection dialog, a click focuses the engine Select without

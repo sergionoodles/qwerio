@@ -1,5 +1,5 @@
 //! Application directories: XDG locations on Linux, the standard locations
-//! on macOS and Windows.
+//! on macOS.
 
 use std::path::PathBuf;
 

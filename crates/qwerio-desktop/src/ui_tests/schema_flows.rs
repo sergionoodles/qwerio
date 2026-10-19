@@ -1,15 +1,9 @@
-//! Creating tables and columns from the toolbar's New menu.
+//! Creating tables and columns from the toolbar.
 
 use gpui_kit::TestAppContext;
 use gpui_kit::test::TestWindowExt as _;
 
 use super::*;
-
-/// "New" menu items reached from the keyboard inside a SQLite connection,
-/// where databases (new files) and tables can be created.
-const TABLE_ITEM_STEPS: usize = 2;
-/// Inside a table, the column item is enabled as well.
-const COLUMN_ITEM_STEPS: usize = 3;
 
 /// Opens the shop connection, and its first table when `open_table` is set.
 fn open_connection(
@@ -66,11 +60,11 @@ fn column_names(fixture: &Fixture, table: &str) -> Vec<String> {
 }
 
 #[gpui_kit::test]
-fn creates_a_table_from_the_new_menu_and_opens_it(cx: &mut TestAppContext) {
+fn creates_a_table_from_the_toolbar_and_opens_it(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let window = open_connection(&fixture, false, cx);
 
-    choose_menu_item(window, cx, "new-menu", TABLE_ITEM_STEPS);
+    interact(window, cx, |window, cx| window.click("new-table", cx));
     wait_until(window, cx, "the table form opens", |window, _| {
         window.try_find("schema-name").is_some()
     });
@@ -109,7 +103,7 @@ fn adds_a_column_to_the_open_table(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let window = open_connection(&fixture, true, cx);
 
-    choose_menu_item(window, cx, "new-menu", COLUMN_ITEM_STEPS);
+    interact(window, cx, |window, cx| window.click("new-column", cx));
     wait_until(window, cx, "the column form opens", |window, _| {
         window.try_find("column-name").is_some()
     });
@@ -131,7 +125,7 @@ fn keeps_the_form_open_when_the_database_rejects_the_change(cx: &mut TestAppCont
     let fixture = Fixture::new();
     let window = open_connection(&fixture, true, cx);
 
-    choose_menu_item(window, cx, "new-menu", COLUMN_ITEM_STEPS);
+    interact(window, cx, |window, cx| window.click("new-column", cx));
     wait_until(window, cx, "the column form opens", |window, _| {
         window.try_find("column-name").is_some()
     });

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Resizes the artwork in resources/ for Linux, macOS, and Windows packages.
+# Resizes the artwork in resources/ for Linux and macOS packages.
 # Small icons use the favicon's dark background to keep the white mark visible.
 #
 # Requires: ImageMagick 6 (convert) or 7 (magick).
@@ -40,7 +40,3 @@ for size in "${sizes[@]}"; do
     -gravity center -background none -extent "${size}x${size}" \
     -strip "PNG32:$icons/qwerio-$size.png"
 done
-
-"$imagemagick" "$icons/qwerio-16.png" "$icons/qwerio-24.png" \
-  "$icons/qwerio-32.png" "$icons/qwerio-48.png" "$icons/qwerio-64.png" \
-  "$icons/qwerio-128.png" "$icons/qwerio-256.png" "$icons/qwerio.ico"

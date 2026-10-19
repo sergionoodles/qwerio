@@ -1288,7 +1288,10 @@ impl WorkspaceShell {
         for (id, name, engine, detail) in connections {
             connection_places.push(self.render_place(
                 format!("connection-{id}").into(),
-                entry_icon(qwerio_workspace::explorer::EntryKind::Connection(engine)),
+                entry_icon(
+                    qwerio_workspace::explorer::EntryKind::Connection(engine),
+                    cx,
+                ),
                 name.into(),
                 detail,
                 Location::connection_root(id),

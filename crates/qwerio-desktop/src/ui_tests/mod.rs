@@ -4,6 +4,7 @@
 mod connection_flows;
 mod console_flows;
 mod document_flows;
+mod explorer_flows;
 mod schema_flows;
 mod workspace_flows;
 
@@ -213,32 +214,6 @@ pub fn choose_option(
         if window.find(select).expanded() != Some(true) {
             window.press("down", cx);
         }
-
-        for _ in 0..steps {
-            window.press("down", cx);
-        }
-
-        window.press("enter", cx);
-    });
-}
-
-/// Opens a dropdown menu from its button, presses Down `steps` times, and
-/// commits. The first press selects the top item even when it is disabled;
-/// later presses skip disabled items.
-pub fn choose_menu_item(
-    handle: AnyWindowHandle,
-    cx: &mut TestAppContext,
-    button: &'static str,
-    steps: usize,
-) {
-    interact(handle, cx, |window, cx| {
-        gpui_kit::test::TestWindowExt::click(window, button, cx)
-    });
-    wait_until(handle, cx, "the menu opens", |window, _| {
-        gpui_kit::test::TestWindowExt::try_find(window, "popup-menu").is_some()
-    });
-    interact(handle, cx, |window, cx| {
-        use gpui_kit::test::TestWindowExt as _;
 
         for _ in 0..steps {
             window.press("down", cx);

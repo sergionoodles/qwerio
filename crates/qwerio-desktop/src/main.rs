@@ -1,9 +1,6 @@
 //! Qwerio desktop entry point: composes services, registers the database
 //! adapters, and opens the first window.
 
-// Release builds are GUI apps on Windows: no console window opens with them.
-#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
-
 mod actions;
 mod assets;
 mod connection_dialog;

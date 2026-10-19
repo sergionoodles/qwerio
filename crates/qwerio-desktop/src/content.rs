@@ -2,7 +2,8 @@
 //! cannot fulfill itself, and icons for explorer entries.
 
 use gpui_kit::assets::IconName as LucideIcon;
-use gpui_kit::component::{Icon, IconName};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName};
+use gpui_kit::{App, Styled as _};
 use qwerio_app::navigation::ViewState;
 use qwerio_core::connection::EngineKind;
 use qwerio_core::ids::ConnectionId;
@@ -59,29 +60,37 @@ pub enum ContentEvent {
     Changed,
 }
 
-pub fn entry_icon(kind: EntryKind) -> Icon {
-    match kind {
-        EntryKind::Folder => Icon::new(IconName::Folder),
-        EntryKind::Connection(EngineKind::Postgres) => Icon::new(LucideIcon::Server),
-        EntryKind::Connection(EngineKind::Sqlite) => Icon::new(LucideIcon::Database),
-        EntryKind::Database => Icon::new(LucideIcon::Database),
-        EntryKind::Namespace { .. } => Icon::new(LucideIcon::LayoutGrid),
-        EntryKind::Object(kind) => object_icon(kind),
-        EntryKind::Document(kind) => document_icon(kind),
-    }
+pub fn entry_icon(kind: EntryKind, cx: &App) -> Icon {
+    let theme = cx.theme();
+    let (icon, color) = match kind {
+        EntryKind::Folder => (Icon::new(IconName::Folder), theme.yellow),
+        EntryKind::Connection(EngineKind::Postgres) => (Icon::new(LucideIcon::Server), theme.blue),
+        EntryKind::Connection(EngineKind::Sqlite) | EntryKind::Database => {
+            (Icon::new(LucideIcon::Database), theme.blue)
+        }
+        EntryKind::Namespace { .. } => (Icon::new(LucideIcon::LayoutGrid), theme.magenta),
+        EntryKind::Object(kind) => return object_icon(kind, cx),
+        EntryKind::Document(kind) => return document_icon(kind, cx),
+    };
+
+    icon.text_color(color)
 }
 
-pub fn object_icon(kind: ObjectKind) -> Icon {
-    match kind {
-        ObjectKind::Table | ObjectKind::ForeignTable => Icon::new(LucideIcon::Table),
-        ObjectKind::View | ObjectKind::MaterializedView => Icon::new(LucideIcon::Sheet),
-    }
+pub fn object_icon(kind: ObjectKind, cx: &App) -> Icon {
+    let (icon, color) = match kind {
+        ObjectKind::Table | ObjectKind::ForeignTable => (LucideIcon::Table, cx.theme().green),
+        ObjectKind::View | ObjectKind::MaterializedView => (LucideIcon::Sheet, cx.theme().cyan),
+    };
+
+    Icon::new(icon).text_color(color)
 }
 
-pub fn document_icon(kind: DocumentKind) -> Icon {
-    match kind {
-        DocumentKind::Sql => Icon::new(LucideIcon::FileCode),
-        DocumentKind::Markdown => Icon::new(LucideIcon::NotebookPen),
-        DocumentKind::Text => Icon::new(IconName::FileText),
-    }
+pub fn document_icon(kind: DocumentKind, cx: &App) -> Icon {
+    let (icon, color) = match kind {
+        DocumentKind::Sql => (Icon::new(LucideIcon::FileCode), cx.theme().magenta),
+        DocumentKind::Markdown => (Icon::new(LucideIcon::NotebookPen), cx.theme().yellow),
+        DocumentKind::Text => (Icon::new(IconName::FileText), cx.theme().muted_foreground),
+    };
+
+    icon.text_color(color)
 }

@@ -5669,7 +5669,6 @@ name = "qwerio-desktop"
 version = "0.1.0"
 dependencies = [
  "directories",
- "embed-resource",
  "gpui-kit",
  "keyring",
  "notify",
