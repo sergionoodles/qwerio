@@ -12,6 +12,7 @@ use async_trait::async_trait;
 
 use crate::catalog::ObjectDetails;
 use crate::connection::{ConnectionDescriptor, Credentials};
+use crate::ddl::{ColumnDefinition, SchemaChange};
 use crate::driver::{
     CancelOutcome, DatabaseDriver, DatabaseSession, OpenSessionRequest, QueryRequest,
 };
@@ -1024,6 +1025,81 @@ pub async fn stale_continuations_are_rejected(context: Context) {
     close(session.as_ref()).await;
 }
 
+// --- Schema changes ------------------------------------------------------
+
+/// Tables created from the engine's suggested types get generated keys, and
+/// columns can be added to them afterwards.
+pub async fn schema_changes_create_tables_and_columns(context: Context) {
+    let capabilities = context.driver.capabilities().clone();
+    let key = ColumnDefinition {
+        name: "id".to_owned(),
+        data_type: capabilities.key_column_type.clone(),
+        is_nullable: false,
+        default: None,
+        is_primary_key: true,
+    };
+    let typed_columns = capabilities
+        .column_types
+        .iter()
+        .enumerate()
+        .map(|(index, data_type)| ColumnDefinition {
+            name: format!("column {index}"),
+            data_type: data_type.clone(),
+            is_nullable: true,
+            default: None,
+            is_primary_key: false,
+        });
+    let create = SchemaChange::CreateTable {
+        container: context.path.clone(),
+        name: "New \"Table\"".to_owned(),
+        columns: std::iter::once(key).chain(typed_columns).collect(),
+    };
+    let table = context.object(ObjectKind::Table, "New \"Table\"");
+    let add = SchemaChange::AddColumn {
+        table: table.clone(),
+        column: ColumnDefinition {
+            name: "visits".to_owned(),
+            data_type: capabilities.column_types[1].clone(),
+            is_nullable: false,
+            default: Some("0".to_owned()),
+            is_primary_key: false,
+        },
+    };
+    let console = context.console().await;
+
+    for change in [&create, &add] {
+        let sql = change.render().expect("render schema change");
+        let events = run(console.as_ref(), &sql).await;
+        assert_eq!(failure(&events), None, "{sql}");
+    }
+
+    let quoted = "\"New \"\"Table\"\"\"";
+    let insert = format!("INSERT INTO {quoted} (\"column 0\") VALUES ('first')");
+    assert_eq!(failure(&run(console.as_ref(), &insert).await), None);
+    let select = format!("SELECT id, visits FROM {quoted}");
+    assert_eq!(
+        rows(&run(console.as_ref(), &select).await),
+        vec![vec![Value::Integer(1), Value::Integer(0)]]
+    );
+    close(console.as_ref()).await;
+
+    let browser = context.browser().await;
+    let details = timed(browser.describe(&table)).await.expect("describe");
+    let names: Vec<&str> = details
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect();
+    assert_eq!(names.first(), Some(&"id"));
+    assert_eq!(names.last(), Some(&"visits"));
+    assert_eq!(names.len(), capabilities.column_types.len() + 2);
+    assert_eq!(
+        details.primary_key.as_ref().map(|key| key.columns.clone()),
+        Some(vec!["id".to_owned()])
+    );
+    close(browser.as_ref()).await;
+}
+
 /// Declares one `#[tokio::test]` per contract check for an adapter's fixture.
 #[macro_export]
 macro_rules! contract_tests {
@@ -1057,6 +1133,7 @@ macro_rules! contract_tests {
             unusual_identifiers_are_quoted,
             relationships_lead_to_referenced_rows,
             stale_continuations_are_rejected,
+            schema_changes_create_tables_and_columns,
         );
     };
     (@tests $fixture:expr; $($name:ident),* $(,)?) => {

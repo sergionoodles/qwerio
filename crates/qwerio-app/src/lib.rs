@@ -10,6 +10,7 @@ pub mod local_state;
 pub mod navigation;
 pub mod registry;
 pub mod requests;
+pub mod schema;
 pub mod services;
 pub mod sessions;
 pub mod table;

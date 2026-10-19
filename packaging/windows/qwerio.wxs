@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Qwerio MSI (WiX Toolset v5). Built by scripts/package-windows.ps1, which
+  defines Version, BinaryPath, and IconPath.
+
+  UpgradeCode identifies the product across versions; never change it, or
+  new versions install beside old ones instead of replacing them.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="Qwerio"
+    Manufacturer="Qwerio"
+    Version="$(var.Version)"
+    UpgradeCode="B723D793-ED29-4317-B1B1-1D4F46B6C9EC"
+    Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="qwerio.ico" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="qwerio.ico" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Qwerio" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <Feature Id="Main">
+      <Component Directory="INSTALLFOLDER">
+        <File Source="$(var.BinaryPath)" KeyPath="yes">
+          <Shortcut
+            Id="StartMenuShortcut"
+            Directory="ProgramMenuFolder"
+            Name="Qwerio"
+            Description="Browse databases beside your queries and notes"
+            Icon="qwerio.ico"
+            WorkingDirectory="INSTALLFOLDER" />
+        </File>
+      </Component>
+    </Feature>
+  </Package>
+</Wix>

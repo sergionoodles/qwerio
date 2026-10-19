@@ -165,7 +165,7 @@ impl TableDelegate for TableGridDelegate {
                 .get(row_ix)
                 .and_then(|row| row.get(*column))
         }) {
-            Some(value) => render_cell(value, cx),
+            Some(value) => render_cell(row_ix, col_ix, value, cx),
             None => div().into_any_element(),
         }
     }

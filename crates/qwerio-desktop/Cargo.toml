@@ -27,7 +27,13 @@ tokio = { version = "1.48", features = ["rt-multi-thread", "sync"] }
 toml = "1.1"
 
 [dev-dependencies]
+# Headless UI tests; dev-only, so release builds never include test support.
+gpui-kit = { workspace = true, features = ["test-support"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 tempfile = "3.23"
 
 [lints]
 workspace = true
+
+[build-dependencies]
+embed-resource = "3"

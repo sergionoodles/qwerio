@@ -18,8 +18,9 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Task, Window, div,
+    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, TestSupportExt as _, Window, div,
 };
 use qwerio_app::console::{ConsoleState, ExecutionTarget, RunOutcome};
 use qwerio_app::sessions::ConsoleLease;
@@ -620,6 +621,7 @@ impl SqlConsole {
         };
 
         div()
+            .id("console-status")
             .text_sm()
             .truncate()
             .text_color(if is_error {
@@ -627,7 +629,10 @@ impl SqlConsole {
             } else {
                 cx.theme().muted_foreground
             })
+            .role(Role::Status)
+            .aria_label(text.clone())
             .child(text)
+            .test_support()
     }
 }
 
@@ -701,6 +706,8 @@ impl Render for SqlConsole {
                     .child(
                         div().w_56().child(
                             Select::new(&self.connection_select)
+                                .id("console-target")
+                                .accessibility_label("Connection")
                                 .small()
                                 .placeholder("Choose connection"),
                         ),

@@ -1,6 +1,9 @@
 //! Qwerio desktop entry point: composes services, registers the database
 //! adapters, and opens the first window.
 
+// Release builds are GUI apps on Windows: no console window opens with them.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod actions;
 mod assets;
 mod connection_dialog;
@@ -10,13 +13,17 @@ mod explorer_view;
 mod filter_panel;
 mod grid;
 mod platform;
+mod schema_dialog;
 mod services;
 mod shell;
 mod sql_console;
 mod table_view;
 mod theme;
+#[cfg(test)]
+mod ui_tests;
 mod workbench;
 mod workspace_model;
+mod workspace_switcher;
 
 use std::path::PathBuf;
 use std::process::ExitCode;

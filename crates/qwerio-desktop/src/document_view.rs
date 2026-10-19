@@ -304,6 +304,12 @@ impl DocumentView {
 
                         this.editor
                             .update(cx, |editor, cx| editor.set_value(text, window, cx));
+
+                        // Focus landed on the loading placeholder; hand it to the editor.
+                        if this.focus_handle.is_focused(window) {
+                            let editor = this.editor.focus_handle(cx);
+                            window.focus(&editor, cx);
+                        }
                     }
                     Err(error) => this.load = LoadState::Failed(error),
                 }

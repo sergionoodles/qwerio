@@ -449,3 +449,24 @@ async fn read_only_sessions_report_the_weaker_enforcement() {
     close(session.as_ref()).await;
     database.drop().await;
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rendered_create_database_runs_outside_a_transaction() {
+    let database = TestDatabase::new().await;
+    let created = format!("qwerio_test_{}", ConnectionId::new().as_uuid().simple());
+    let change = qwerio_core::ddl::SchemaChange::CreateDatabase {
+        name: created.clone(),
+    };
+    let session = database.console().await;
+
+    let sql = change.render().expect("render");
+    let events = run(session.as_ref(), &sql).await;
+    assert_eq!(failure(&events), None, "{sql}");
+
+    let databases = session.list(&CatalogPath::root()).await.expect("databases");
+    assert!(databases.iter().any(|entry| entry.name == created));
+    close(session.as_ref()).await;
+
+    database.server.drop_database(&created).await;
+    database.drop().await;
+}

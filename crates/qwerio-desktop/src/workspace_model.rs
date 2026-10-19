@@ -8,9 +8,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, SystemTime};
 
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
+use qwerio_app::schema::apply_schema_change;
 use qwerio_app::services::ResolvedConnection;
 use qwerio_app::{AppError, AppServices};
+use qwerio_core::capabilities::DatabaseCapabilities;
 use qwerio_core::catalog::ObjectDetails;
+use qwerio_core::ddl::SchemaChange;
 use qwerio_core::driver::DatabaseSession;
 use qwerio_core::ids::ConnectionId;
 use qwerio_core::resource::{CatalogEntry, CatalogPath, ObjectRef};
@@ -351,6 +354,63 @@ impl WorkspaceModel {
 
             Ok(details)
         })
+    }
+
+    /// What a bound connection's engine supports; `None` when the connection
+    /// is not set up on this computer.
+    pub fn capabilities(&self, connection: ConnectionId) -> Option<&DatabaseCapabilities> {
+        if !self.bound.contains(&connection) {
+            return None;
+        }
+
+        let engine = self.manifest.connection(connection)?.engine;
+        self.services.drivers.capabilities(engine)
+    }
+
+    /// Runs a schema change on its own writable session, then reloads the
+    /// listing or metadata it changed.
+    pub fn apply_schema_change(
+        &self,
+        connection: ConnectionId,
+        change: SchemaChange,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), SharedString>> {
+        let resolve = self.resolve(connection, cx);
+        let sessions = Arc::clone(&self.services.sessions);
+
+        cx.spawn(async move |this, cx| {
+            let resolved = resolve.await?;
+            apply_schema_change(&sessions, resolved, &change)
+                .await
+                .map_err(|error| error_text(&AppError::Database(error)))?;
+
+            this.update(cx, |this, cx| {
+                this.reload_changed_schema(connection, &change, cx)
+            })
+            .ok();
+
+            Ok(())
+        })
+    }
+
+    fn reload_changed_schema(
+        &mut self,
+        connection: ConnectionId,
+        change: &SchemaChange,
+        cx: &mut Context<Self>,
+    ) {
+        match change {
+            SchemaChange::CreateDatabase { .. } => {
+                self.ensure_catalog(connection, CatalogPath::root(), true, cx)
+            }
+            SchemaChange::CreateTable { container, .. } => {
+                self.ensure_catalog(connection, container.clone(), true, cx)
+            }
+            SchemaChange::AddColumn { table, .. } => {
+                self.details.remove(table);
+                cx.notify();
+            }
+        }
     }
 
     /// Runs a workspace operation off the UI thread, then refreshes the

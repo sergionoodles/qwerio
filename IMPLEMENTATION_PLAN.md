@@ -525,10 +525,13 @@ and platform acceptance checks all pass. AI is outside that completion gate.
   (1M rows, debug build, this machine): first page 0.8 ms, 50 keyset pages
   31.5 ms, first page sorted by an unindexed column 324 ms, contains filter
   305 ms. Budgets still need an optimized build on reference hardware.
-- **GPUI UI tests:** enabling `gpui-kit`'s `test-support` feature fails
-  dependency resolution (`gpui-fast-macos` pins `cocoa = 0.26.0`), so headless
-  UI integration tests are blocked until upstream relaxes the pin. Application
-  state and flows are tested without GPUI instead.
+- **GPUI UI tests:** `gpui-kit`'s `test-support` feature failed to resolve
+  only because the lockfile held `cocoa` 0.26.1 and `unicode-properties`
+  0.1.4, while the optional `gpui-fast` crates pin `=0.26.0` and `=0.1.3`.
+  Locking those two patch versions resolves it; `gpui-fast` is locked but
+  never compiled. Test support is a dev-dependency only, so release builds
+  exclude it. UI tests call `allow_parking()` because SQLite, file watching,
+  and local state run on real threads, and wait in real time.
 
 ### 8.2 What exists
 
@@ -566,6 +569,21 @@ and platform acceptance checks all pass. AI is outside that completion gate.
   with live Omarchy updates, keychain credentials, XDG paths, a Linux desktop
   entry, and native menus where supported.
 
+- Headless UI tests (`crates/qwerio-desktop/src/ui_tests`) drive the real
+  workbench through clicks and keystrokes: opening a recent workspace,
+  keyboard table browsing with server-side sorting, adding a SQLite
+  connection, running a query, rejecting a multi-statement script without
+  running it, editing and saving a note, back/forward, and the split. Explorer
+  rows, grid cells, form fields, and status text gained roles and accessible
+  names for this.
+- `.github/workflows/build-apps.yml` builds unsigned packages on `v*` tags
+  and on demand: a Linux AppImage (`scripts/package-linux.sh`, Ubuntu 22.04
+  glibc), a universal macOS DMG with an ad-hoc signed app
+  (`scripts/package-macos.sh`), and a Windows MSI (WiX 5) plus portable zip
+  (`scripts/package-windows.ps1`). Tags also create a draft release. The icon
+  in `packaging/icons` is a placeholder; `scripts/generate-icons.sh`
+  regenerates its PNG and ICO renditions.
+
 ### 8.3 Checks
 
 `scripts/check.sh` runs `cargo fmt --check`, Clippy with warnings denied, and
@@ -578,10 +596,14 @@ TLS CA). PostgreSQL tests fail with a clear message when run without it.
 - Manual desktop review on Omarchy/Hyprland, X11, a mainstream Wayland
   desktop, macOS, and Windows (the Phase 4 visual gate), including fractional
   scaling, input methods, file portals, and window decorations.
-- Headless GPUI interaction tests (blocked, see above).
-- macOS/Windows builds have not been compiled or run on those platforms.
-- Packaging, signing, and notarization (Phase 7) are not started and need
-  separate authorization.
+- macOS/Windows builds have not been compiled or run on those platforms;
+  the release workflow has not run yet.
+- Code signing and notarization (Developer ID, Windows Authenticode) are not
+  set up; packages are unsigned. A homepage URL is missing from the AppStream
+  metadata.
+- In the connection dialog, a click focuses the engine Select without
+  opening it (it opens from the keyboard); the same Select opens on click
+  outside dialogs. Not yet investigated.
 - Accessibility semantics beyond what GPUI Kit components provide are not
   verified with a screen reader.
 

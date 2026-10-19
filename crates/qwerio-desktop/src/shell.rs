@@ -2,12 +2,14 @@
 //! with places and contextual filters, tabs with one optional split, and a
 //! status bar. Tab content is an explorer, a table, or a document.
 
+mod schema_changes;
+mod toolbar;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogClose;
@@ -17,14 +19,15 @@ use gpui_kit::component::notification::Notification;
 use gpui_kit::component::resizable::{h_resizable, resizable_panel};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, Icon, IconName, Selectable as _, Sizable as _,
-    StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _,
+    WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Action, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
+    div, px,
 };
 use qwerio_app::navigation::ViewState;
 use qwerio_app::tabs::{Pane, SplitAxis, TabId, TabSet};
@@ -188,6 +191,10 @@ impl WorkspaceShell {
 
     pub fn title(&self, cx: &App) -> SharedString {
         format!("{} — Qwerio", self.model.read(cx).manifest().name).into()
+    }
+
+    pub fn root(&self, cx: &App) -> PathBuf {
+        self.model.read(cx).root().clone()
     }
 
     /// Ends console sessions and saves UI state before the shell goes away.
@@ -1160,125 +1167,6 @@ impl WorkspaceShell {
 
     // --- Rendering -------------------------------------------------------------
 
-    fn render_toolbar(&self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let manifest = Arc::clone(self.model.read(cx).manifest());
-        let location = self.focused_location();
-        let history = self
-            .tabs
-            .tab(self.tabs.focused_tab())
-            .map(|tab| &tab.history);
-        let can_go_back = history.is_some_and(|history| history.can_go_back());
-        let can_go_forward = history.is_some_and(|history| history.can_go_forward());
-        let is_explorer = matches!(self.focused_content(), Some(TabContent::Explorer(_)));
-
-        let crumbs = breadcrumbs(&manifest, &location);
-        let last = crumbs.len().saturating_sub(1);
-        let breadcrumb =
-            crumbs
-                .into_iter()
-                .enumerate()
-                .fold(Breadcrumb::new(), |breadcrumb, (index, crumb)| {
-                    if index == last {
-                        return breadcrumb.child(BreadcrumbItem::new(crumb.label));
-                    }
-
-                    let target = crumb.location;
-                    breadcrumb.child(BreadcrumbItem::new(crumb.label).on_click(cx.listener(
-                        move |this, _, window, cx| {
-                            this.navigate(target.clone(), ViewState::default(), false, window, cx);
-                        },
-                    )))
-                });
-
-        h_flex()
-            .h_10()
-            .flex_shrink_0()
-            .px_2()
-            .gap_1()
-            .border_b_1()
-            .border_color(cx.theme().border)
-            .bg(cx.theme().title_bar)
-            .child(
-                Button::new("toggle-sidebar")
-                    .ghost()
-                    .small()
-                    .icon(IconName::PanelLeft)
-                    .tooltip("Sidebar")
-                    .toggled(self.is_sidebar_visible(window))
-                    .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
-            )
-            .child(
-                Button::new("back")
-                    .ghost()
-                    .small()
-                    .icon(IconName::ArrowLeft)
-                    .tooltip("Back")
-                    .disabled(!can_go_back)
-                    .on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))),
-            )
-            .child(
-                Button::new("forward")
-                    .ghost()
-                    .small()
-                    .icon(IconName::ArrowRight)
-                    .tooltip("Forward")
-                    .disabled(!can_go_forward)
-                    .on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .px_2()
-                    .child(breadcrumb),
-            )
-            .when(is_explorer, |this| {
-                let is_icons = self.explorer_layout == ExplorerLayout::Icons;
-                this.child(
-                    Button::new("toggle-layout")
-                        .ghost()
-                        .small()
-                        .icon(if is_icons {
-                            Icon::new(gpui_kit::assets::IconName::List)
-                        } else {
-                            Icon::new(gpui_kit::assets::IconName::LayoutGrid)
-                        })
-                        .tooltip(if is_icons {
-                            "Show as list"
-                        } else {
-                            "Show as icons"
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            let layout = if is_icons {
-                                ExplorerLayout::Details
-                            } else {
-                                ExplorerLayout::Icons
-                            };
-                            this.set_layout(layout, cx);
-                        })),
-                )
-            })
-            .child(
-                Button::new("new-query")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Plus)
-                    .tooltip("New temporary query")
-                    .on_click(
-                        cx.listener(|this, _, window, cx| this.new_temporary_query(window, cx)),
-                    ),
-            )
-            .child(
-                Button::new("palette")
-                    .ghost()
-                    .small()
-                    .icon(IconName::Search)
-                    .tooltip("Commands")
-                    .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx))),
-            )
-    }
-
     fn is_sidebar_visible(&self, window: &Window) -> bool {
         if is_narrow(window) {
             self.sidebar_open_when_narrow
@@ -1408,6 +1296,38 @@ impl WorkspaceShell {
             ));
         }
 
+        let shell_focus = self.focus_handle.clone();
+        let workspace_switcher = Button::new("switch-workspace")
+            .ghost()
+            .w_full()
+            .justify_start()
+            .tooltip("Switch Workspace")
+            .accessibility_label(SharedString::from(manifest.name.clone()))
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .font_semibold()
+                            .child(manifest.name.clone()),
+                    )
+                    .child(
+                        Icon::new(IconName::ChevronsUpDown)
+                            .small()
+                            .text_color(cx.theme().muted_foreground),
+                    ),
+            )
+            // The shell's node bubbles to the workbench, which owns switching,
+            // even when nothing inside the shell has focus.
+            .on_click(move |_, window, cx| {
+                shell_focus.dispatch_action(&SwitchWorkspace, window, cx)
+            });
+
         let root_place = self.render_place(
             "place-root".into(),
             Icon::new(IconName::FolderOpen),
@@ -1442,6 +1362,7 @@ impl WorkspaceShell {
             .overflow_y_scroll()
             .p_2()
             .gap_3()
+            .child(workspace_switcher)
             .child(
                 v_flex()
                     .gap_0p5()
@@ -1630,7 +1551,17 @@ impl WorkspaceShell {
             .bg(cx.theme().status_bar)
             .text_xs()
             .text_color(cx.theme().muted_foreground)
-            .child(div().flex_1().min_w_0().truncate().child(status))
+            .child(
+                div()
+                    .id("status")
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .role(Role::Status)
+                    .aria_label(status.clone())
+                    .child(status)
+                    .test_support(),
+            )
             .child(div().max_w_1_3().truncate().child(root))
     }
 }
@@ -1643,6 +1574,9 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("New Note", Box::new(NewNote)),
         ("New Folder", Box::new(NewFolder)),
         ("New Connection…", Box::new(NewConnection)),
+        ("New Database…", Box::new(NewDatabase)),
+        ("New Table…", Box::new(NewTable)),
+        ("New Column…", Box::new(NewColumn)),
         ("Go Back", Box::new(GoBack)),
         ("Go Forward", Box::new(GoForward)),
         ("Go to Workspace", Box::new(GoToWorkspaceRoot)),
@@ -1670,6 +1604,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Actual Text Size", Box::new(ResetFontSize)),
         ("Open Workspace…", Box::new(OpenWorkspace)),
         ("New Workspace…", Box::new(NewWorkspace)),
+        ("Switch Workspace…", Box::new(SwitchWorkspace)),
         ("Close Workspace", Box::new(CloseWorkspace)),
     ]
 }
@@ -1814,6 +1749,11 @@ impl Render for WorkspaceShell {
             .on_action(cx.listener(|this, _: &NewConnection, window, cx| {
                 connection_dialog::open(this.model.clone(), None, window, cx)
             }))
+            .on_action(
+                cx.listener(|this, _: &NewDatabase, window, cx| this.new_database(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &NewTable, window, cx| this.new_table(window, cx)))
+            .on_action(cx.listener(|this, _: &NewColumn, window, cx| this.new_column(window, cx)))
             .on_action(cx.listener(|this, _: &NewSqlDocument, window, cx| {
                 this.new_document(DocumentKind::Sql, None, window, cx)
             }))

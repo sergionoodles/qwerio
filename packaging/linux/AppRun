@@ -1,0 +1,4 @@
+#!/bin/sh
+# AppImage entry point: runs the bundled binary with the caller's arguments.
+here="$(dirname "$(readlink -f "$0")")"
+exec "$here/usr/bin/qwerio" "$@"

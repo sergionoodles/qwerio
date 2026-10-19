@@ -2,22 +2,24 @@
 //! connection's name and engine; the address or file stays in this
 //! computer's local state, and the password goes to the platform keychain.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogClose;
-use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::select::{Select, SelectEvent, SelectState};
 use gpui_kit::component::{
     ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, IntoElement, ParentElement as _, PathPromptOptions,
-    Render, SharedString, Styled as _, Subscription, Window, div,
+    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement as _, PathPromptOptions, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
+    div,
 };
 use qwerio_core::connection::{
     ConnectionDescriptor, ConnectionOptions, Credentials, DEFAULT_POSTGRES_PORT, EngineKind,
@@ -30,6 +32,8 @@ use crate::workspace_model::{WorkspaceModel, error_text};
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ENGINES: [EngineKind; 2] = [EngineKind::Postgres, EngineKind::Sqlite];
 const TLS_LABELS: [&str; 3] = ["Verify certificate", "Verify with CA file", "No encryption"];
+const NAME_PLACEHOLDER: &str = "Name shown in the workspace";
+const NEW_SQLITE_FILE_NAME: &str = "database.sqlite";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Tls {
@@ -112,6 +116,54 @@ pub fn open(
     });
 }
 
+/// Asks where to save a new SQLite database, creates the empty file, and
+/// adds it to the workspace as a connection. `None` when the user cancels.
+pub fn create_sqlite_database(
+    model: &Entity<WorkspaceModel>,
+    cx: &mut App,
+) -> Task<Result<Option<ConnectionId>, SharedString>> {
+    let directory = model.read(cx).root().clone();
+    let services = Arc::clone(model.read(cx).services());
+    let prompt = cx.prompt_for_new_path(&directory, Some(NEW_SQLITE_FILE_NAME));
+    let model = model.clone();
+
+    cx.spawn(async move |cx| {
+        // The prompt's sender is dropped when the dialog is dismissed.
+        let Ok(chosen) = prompt.await else {
+            return Ok(None);
+        };
+        let Some(path) = chosen.map_err(|error| SharedString::from(error.to_string()))? else {
+            return Ok(None);
+        };
+
+        let create_path = path.clone();
+        cx.background_spawn(async move { qwerio_sqlite::create_database_file(&create_path) })
+            .await
+            .map_err(|error| SharedString::from(error.message))?;
+
+        let name = default_name(EngineKind::Sqlite, &path.display().to_string())
+            .unwrap_or_else(|| NEW_SQLITE_FILE_NAME.to_owned());
+        let alias = model.update(cx, |model, cx| {
+            model.update_workspace(cx, move |workspace| {
+                workspace.add_connection(&name, EngineKind::Sqlite)
+            })
+        });
+        let connection = alias.await?;
+
+        let manifest = model.read_with(cx, |model, _| Arc::clone(model.manifest()));
+        let options = ConnectionOptions::Sqlite(SqliteOptions::new(path));
+        cx.background_spawn(async move {
+            services
+                .bind_connection(&manifest, connection, options, None)
+                .map_err(|error| error_text(&error))
+        })
+        .await?;
+
+        model.update(cx, |model, cx| model.set_bound(connection, true, cx));
+        Ok(Some(connection))
+    })
+}
+
 impl ConnectionForm {
     fn new(
         model: Entity<WorkspaceModel>,
@@ -136,15 +188,24 @@ impl ConnectionForm {
         let tls_select =
             cx.new(|cx| SelectState::new(tls_labels, Some(IndexPath::new(0)), window, cx));
 
+        let host = input("Host or socket directory", window, cx);
+        let sqlite_path = input("Database file", window, cx);
+
         let subscriptions = vec![
-            cx.subscribe(
+            cx.subscribe_in(
                 &engine_select,
-                |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify(),
+                window,
+                |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
+                    this.refresh_name_placeholder(window, cx);
+                    cx.notify();
+                },
             ),
             cx.subscribe(
                 &tls_select,
                 |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify(),
             ),
+            cx.subscribe_in(&host, window, Self::on_address_event),
+            cx.subscribe_in(&sqlite_path, window, Self::on_address_event),
         ];
 
         let port = cx.new(|cx| {
@@ -159,14 +220,14 @@ impl ConnectionForm {
         });
 
         let mut form = Self {
-            name: input("Name shown in the workspace", window, cx),
-            host: input("Host or socket directory", window, cx),
+            name: input(NAME_PLACEHOLDER, window, cx),
+            host,
             port,
             user: input("User", window, cx),
             database: input("Database", window, cx),
             password,
             ca_file: input("CA certificate file (PEM)", window, cx),
-            sqlite_path: input("Database file", window, cx),
+            sqlite_path,
             model,
             editing,
             engine_select,
@@ -183,6 +244,40 @@ impl ConnectionForm {
         }
 
         form
+    }
+
+    fn on_address_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if matches!(event, InputEvent::Change) {
+            self.refresh_name_placeholder(window, cx);
+        }
+    }
+
+    /// The name used when the field is left empty on a new connection.
+    fn default_name(&self, cx: &App) -> Option<String> {
+        if self.editing.is_some() {
+            return None;
+        }
+
+        let address = match self.engine(cx) {
+            EngineKind::Postgres => Self::text(&self.host, cx),
+            EngineKind::Sqlite => Self::text(&self.sqlite_path, cx),
+        };
+        default_name(self.engine(cx), &address)
+    }
+
+    fn refresh_name_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let placeholder = self
+            .default_name(cx)
+            .unwrap_or_else(|| NAME_PLACEHOLDER.to_owned());
+        self.name.update(cx, |input, cx| {
+            input.set_placeholder(placeholder, window, cx)
+        });
     }
 
     fn load_existing(
@@ -418,7 +513,12 @@ impl ConnectionForm {
             Err(error) => return self.set_status(error, true, cx),
         };
 
-        let name = Self::text(&self.name, cx);
+        let typed_name = Self::text(&self.name, cx);
+        let name = if typed_name.is_empty() {
+            self.default_name(cx).unwrap_or_default()
+        } else {
+            typed_name
+        };
 
         if name.is_empty() {
             return self.set_status("Enter a name for the connection", true, cx);
@@ -535,7 +635,25 @@ impl ConnectionForm {
     }
 }
 
-fn field(label: &'static str, control: impl IntoElement, cx: &App) -> impl IntoElement {
+/// `postgres@localhost` for a server, `sqlite@app.db` for a file.
+fn default_name(engine: EngineKind, address: &str) -> Option<String> {
+    let prefix = match engine {
+        EngineKind::Postgres => "postgres",
+        EngineKind::Sqlite => "sqlite",
+    };
+    let target = match engine {
+        EngineKind::Postgres => Some(address),
+        EngineKind::Sqlite => Path::new(address)
+            .file_name()
+            .and_then(|name| name.to_str()),
+    };
+
+    target
+        .filter(|target| !target.is_empty())
+        .map(|target| format!("{prefix}@{target}"))
+}
+
+pub(crate) fn field(label: &'static str, control: impl IntoElement, cx: &App) -> impl IntoElement {
     v_flex()
         .gap_1()
         .child(
@@ -559,33 +677,33 @@ impl Render for ConnectionForm {
 
         v_flex()
             .gap_3()
-            .child(field("Name", Input::new(&self.name), cx))
+            .child(field("Name", Input::new(&self.name).id("connection-name").aria_label("Name"), cx))
             .when(self.editing.is_none(), |this| {
-                this.child(field("Engine", Select::new(&self.engine_select), cx))
+                this.child(field("Engine", Select::new(&self.engine_select).id("connection-engine").accessibility_label("Engine"), cx))
             })
             .when(engine == EngineKind::Postgres, |this| {
                 this.child(
                     h_flex()
                         .gap_2()
-                        .child(div().flex_1().child(field("Host", Input::new(&self.host), cx)))
-                        .child(div().w_24().child(field("Port", Input::new(&self.port), cx))),
+                        .child(div().flex_1().child(field("Host", Input::new(&self.host).id("connection-host").aria_label("Host"), cx)))
+                        .child(div().w_24().child(field("Port", Input::new(&self.port).id("connection-port").aria_label("Port"), cx))),
                 )
                 .child(
                     h_flex()
                         .gap_2()
-                        .child(div().flex_1().child(field("User", Input::new(&self.user), cx)))
-                        .child(div().flex_1().child(field("Database", Input::new(&self.database), cx))),
+                        .child(div().flex_1().child(field("User", Input::new(&self.user).id("connection-user").aria_label("User"), cx)))
+                        .child(div().flex_1().child(field("Database", Input::new(&self.database).id("connection-database").aria_label("Database"), cx))),
                 )
-                .child(field("Password", Input::new(&self.password), cx))
+                .child(field("Password", Input::new(&self.password).id("connection-password").aria_label("Password"), cx))
                 .child(
                     div()
                         .text_xs()
                         .text_color(cx.theme().muted_foreground)
                         .child(password_placeholder),
                 )
-                .child(field("Encryption", Select::new(&self.tls_select), cx))
+                .child(field("Encryption", Select::new(&self.tls_select).id("connection-encryption").accessibility_label("Encryption"), cx))
                 .when(tls == Tls::VerifyWithCa, |this| {
-                    this.child(field("CA certificate", Input::new(&self.ca_file), cx))
+                    this.child(field("CA certificate", Input::new(&self.ca_file).id("connection-ca-file").aria_label("CA certificate"), cx))
                 })
                 .when(tls == Tls::Disabled, |this| {
                     this.child(
@@ -601,7 +719,7 @@ impl Render for ConnectionForm {
                     "Database file",
                     h_flex()
                         .gap_2()
-                        .child(div().flex_1().child(Input::new(&self.sqlite_path)))
+                        .child(div().flex_1().child(Input::new(&self.sqlite_path).id("connection-file").aria_label("Database file")))
                         .child(
                             Button::new("choose-file")
                                 .outline()
@@ -637,10 +755,41 @@ impl Render for ConnectionForm {
             .when_some(self.status.clone(), |this, (message, is_error)| {
                 this.child(
                     div()
+                        .id("connection-status")
                         .text_sm()
                         .text_color(if is_error { cx.theme().danger } else { cx.theme().success })
-                        .child(message),
+                        .role(Role::Status)
+                        .aria_label(message.clone())
+                        .child(message)
+                        .test_support(),
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_a_postgres_connection_after_its_host() {
+        assert_eq!(
+            default_name(EngineKind::Postgres, "localhost").as_deref(),
+            Some("postgres@localhost")
+        );
+    }
+
+    #[test]
+    fn names_a_sqlite_connection_after_its_file() {
+        assert_eq!(
+            default_name(EngineKind::Sqlite, "/data/app.db").as_deref(),
+            Some("sqlite@app.db")
+        );
+    }
+
+    #[test]
+    fn has_no_default_without_an_address() {
+        assert_eq!(default_name(EngineKind::Postgres, ""), None);
+        assert_eq!(default_name(EngineKind::Sqlite, ""), None);
     }
 }

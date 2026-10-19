@@ -23,6 +23,10 @@ pub struct DatabaseCapabilities {
     pub unicode_case_folding: bool,
     /// An error inside an explicit transaction aborts it until ROLLBACK.
     pub errors_abort_transactions: bool,
+    /// Column types offered when creating tables and columns, most common first.
+    pub column_types: Vec<String>,
+    /// The type of a generated key column, offered as a new table's first column.
+    pub key_column_type: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,0 +1,176 @@
+# Builds unsigned Qwerio apps: an AppImage for Linux, a universal DMG for
+# macOS, and an MSI plus a portable zip for Windows. Packages are uploaded as
+# workflow artifacts; pushing a v* tag also attaches them to a draft release.
+name: Build apps
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-apps-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  icons:
+    name: Generate application icons
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install ImageMagick
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends imagemagick
+
+      - name: Resize artwork for all platforms
+        run: scripts/generate-icons.sh
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: application-icons
+          path: |
+            packaging/icons/qwerio-*.png
+            packaging/icons/qwerio.ico
+          if-no-files-found: error
+
+  linux:
+    name: Linux AppImage
+    needs: icons
+    # The oldest available glibc, so the AppImage runs on more distributions.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: application-icons
+          path: packaging/icons
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            pkg-config libxkbcommon-dev libxkbcommon-x11-dev libxcb1-dev libxcb-xkb-dev \
+            libwayland-dev libvulkan-dev libfontconfig-dev
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build
+        run: cargo build --release --locked --package qwerio-desktop
+
+      - name: Package
+        run: scripts/package-linux.sh target/release/qwerio dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qwerio-linux
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS DMG
+    needs: icons
+    runs-on: macos-15
+    env:
+      # Keep in sync with MINIMUM_SYSTEM_VERSION in scripts/package-macos.sh.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: application-icons
+          path: packaging/icons
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" \
+            --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Build
+        run: |
+          cargo build --release --locked --package qwerio-desktop --target aarch64-apple-darwin
+          cargo build --release --locked --package qwerio-desktop --target x86_64-apple-darwin
+
+      - name: Package
+        run: |
+          scripts/package-macos.sh dist \
+            target/aarch64-apple-darwin/release/qwerio \
+            target/x86_64-apple-darwin/release/qwerio
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qwerio-macos
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows MSI
+    needs: icons
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: application-icons
+          path: packaging/icons
+
+      - name: Install the pinned Rust toolchain
+        shell: bash
+        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      # WiX 5 is MS-RL licensed; WiX 6 and later need an EULA acceptance.
+      - name: Install WiX Toolset
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.dotnet\tools"
+
+      - name: Build
+        run: cargo build --release --locked --package qwerio-desktop
+
+      - name: Package
+        shell: pwsh
+        run: scripts/package-windows.ps1 -Binary target/release/qwerio.exe -Output dist
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: qwerio-windows
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          pattern: qwerio-*
+          merge-multiple: true
+
+      - name: Create a draft release with the packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" --draft --generate-notes --title "Qwerio $GITHUB_REF_NAME"

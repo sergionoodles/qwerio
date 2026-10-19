@@ -10,6 +10,7 @@ pub mod catalog;
 pub mod connection;
 #[cfg(feature = "contract-tests")]
 pub mod contract;
+pub mod ddl;
 pub mod display;
 pub mod driver;
 pub mod error;

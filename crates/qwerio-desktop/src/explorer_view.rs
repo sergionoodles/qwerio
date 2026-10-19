@@ -11,9 +11,9 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, ScrollStrategy, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, UniformListScrollHandle,
-    WeakEntity, Window, div, uniform_list,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, ScrollStrategy,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _,
+    UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use std::sync::Arc;
 
@@ -525,6 +525,10 @@ impl ExplorerView {
             .on_click(cx.listener(move |this, event, window, cx| {
                 this.on_row_click(index, event, window, cx)
             }))
+            .role(Role::ListItem)
+            .aria_label(entry.name.clone())
+            .aria_selected(is_selected)
+            .test_support()
             .context_menu(move |menu, window, cx| {
                 Self::entry_menu(
                     this.clone(),
@@ -577,6 +581,10 @@ impl ExplorerView {
             .on_click(cx.listener(move |this, event, window, cx| {
                 this.on_row_click(index, event, window, cx)
             }))
+            .role(Role::ListItem)
+            .aria_label(entry.name.clone())
+            .aria_selected(is_selected)
+            .test_support()
             .context_menu(move |menu, window, cx| {
                 Self::entry_menu(
                     this.clone(),

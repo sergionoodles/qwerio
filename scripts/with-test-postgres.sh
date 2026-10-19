@@ -57,7 +57,8 @@ trap 'pg_ctl --pgdata="$data" --mode=fast --wait stop >/dev/null' EXIT
 export QWERIO_TEST_POSTGRES_HOST="localhost"
 export QWERIO_TEST_POSTGRES_PORT="$port"
 export QWERIO_TEST_POSTGRES_USER="$user"
-export QWERIO_TEST_POSTGRES_PASSWORD="$(cat "$data.password")"
+QWERIO_TEST_POSTGRES_PASSWORD="$(cat "$data.password")"
+export QWERIO_TEST_POSTGRES_PASSWORD
 export QWERIO_TEST_POSTGRES_CA="$data/ca.crt"
 
 "$@"

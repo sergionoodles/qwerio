@@ -4,6 +4,7 @@ Name=Qwerio
 GenericName=Database Workspace
 Comment=Browse databases beside your queries and notes
 Exec=qwerio %f
+Icon=dev.qwerio.Qwerio
 Terminal=false
 Categories=Development;Database;
 StartupWMClass=dev.qwerio.Qwerio

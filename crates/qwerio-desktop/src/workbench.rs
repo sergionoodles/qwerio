@@ -1,11 +1,13 @@
-//! The root view of each window: the welcome screen when no workspace is
-//! open, otherwise the workspace shell. Owns window-wide commands such as
-//! opening workspaces, theme selection, and text size.
+//! The root view of each window: the workspace shell, or the welcome screen
+//! until a first workspace exists. Reopens the last workspace on start and
+//! owns window-wide commands such as switching workspaces, theme selection,
+//! and text size.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::notification::Notification;
 use gpui_kit::component::{
     ActiveTheme as _, IconName, StyledExt as _, Theme, WindowExt as _, h_flex, v_flex,
 };
@@ -13,17 +15,19 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
     IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _,
-    Subscription, Task, Window, WindowBounds, WindowDecorations, WindowOptions, div, px, size,
+    Subscription, Task, Window, WindowBounds, WindowDecorations, WindowOptions, div, img, px, size,
 };
 use qwerio_app::local_state::RecentWorkspace;
 use qwerio_workspace::Workspace;
 
 use crate::actions::*;
+use crate::assets::LOGO_PATH;
 use crate::platform::paths::APPLICATION_ID;
 use crate::services::Services;
 use crate::shell::WorkspaceShell;
 use crate::theme::{self, Applied, ThemeSource};
 use crate::workspace_model::WorkspaceModel;
+use crate::workspace_switcher;
 
 const RECENT_LIMIT: u32 = 8;
 const DEFAULT_FONT_SIZE: f32 = 14.0;
@@ -59,6 +63,8 @@ pub struct Workbench {
     focus_handle: FocusHandle,
     shell: Option<Entity<WorkspaceShell>>,
     recent: Vec<RecentWorkspace>,
+    /// Startup is reopening the last workspace; the welcome screen waits.
+    is_restoring: bool,
     is_opening: bool,
     error: Option<SharedString>,
     theme_source: ThemeSource,
@@ -67,7 +73,11 @@ pub struct Workbench {
 }
 
 impl Workbench {
-    fn new(workspace: Option<PathBuf>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(
+        workspace: Option<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
             if this.theme_source == ThemeSource::System {
                 this.apply_theme(ThemeSource::System, window, cx);
@@ -78,6 +88,7 @@ impl Workbench {
             focus_handle: cx.focus_handle(),
             shell: None,
             recent: Vec::new(),
+            is_restoring: workspace.is_none(),
             is_opening: false,
             error: None,
             theme_source: ThemeSource::System,
@@ -86,10 +97,13 @@ impl Workbench {
         };
 
         workbench.load_preferences(window, cx);
-        workbench.load_recent(cx);
 
-        if let Some(path) = workspace {
-            workbench.open_path(path, None, window, cx);
+        match workspace {
+            Some(path) => {
+                workbench.load_recent(cx);
+                workbench.open_path(path, None, window, cx);
+            }
+            None => workbench.reopen_last_workspace(window, cx),
         }
 
         workbench
@@ -116,6 +130,31 @@ impl Workbench {
                 }
 
                 this.apply_theme(source, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Opens the most recently opened workspace, or shows the welcome screen
+    /// when there is none.
+    fn reopen_last_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let local_state = Arc::clone(&Services::app(cx).local_state);
+        let load = cx.background_spawn(async move { local_state.recent_workspaces(RECENT_LIMIT) });
+
+        cx.spawn_in(window, async move |this, cx| {
+            let recent = load.await.unwrap_or_default();
+
+            this.update_in(cx, |this, window, cx| {
+                let last = recent.first().map(|workspace| workspace.path.clone());
+                this.recent = recent;
+
+                match last {
+                    Some(path) => this.open_path(path, None, window, cx),
+                    None => this.is_restoring = false,
+                }
+
+                cx.notify();
             })
             .ok();
         })
@@ -169,7 +208,7 @@ impl Workbench {
                     theme::apply(source, Some(palette), window, cx)
                 {
                     window.push_notification(
-                        gpui_kit::component::notification::Notification::warning(format!(
+                        Notification::warning(format!(
                             "Omarchy palette unavailable, using the system appearance. {reason}"
                         )),
                         cx,
@@ -247,7 +286,30 @@ impl Workbench {
         .detach();
     }
 
-    fn prompt_and_open(&mut self, create: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Lists recent workspaces in the switcher dialog.
+    fn switch_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let local_state = Arc::clone(&Services::app(cx).local_state);
+        let load = cx.background_spawn(async move { local_state.recent_workspaces(RECENT_LIMIT) });
+        let current = self.shell.as_ref().map(|shell| shell.read(cx).root(cx));
+
+        cx.spawn_in(window, async move |this, cx| {
+            let recent = load.await.unwrap_or_default();
+
+            this.update_in(cx, |this, window, cx| {
+                this.recent = recent.clone();
+                workspace_switcher::open(cx.entity().downgrade(), recent, current, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    pub(crate) fn prompt_and_open(
+        &mut self,
+        create: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,
             directories: true,
@@ -321,14 +383,26 @@ impl Workbench {
 
             this.update_in(cx, |this, window, cx| {
                 this.is_opening = false;
+                this.is_restoring = false;
 
                 match result {
                     Ok(model) => {
+                        if let Some(previous) = this.shell.take() {
+                            previous.update(cx, |shell, cx| shell.shut_down(cx));
+                        }
+
                         let shell = cx.new(|cx| WorkspaceShell::new(model, window, cx));
                         window.set_window_title(&shell.read(cx).title(cx));
                         this.shell = Some(shell);
                     }
-                    Err(error) => this.error = Some(error),
+                    // The welcome screen shows errors; an open shell stays put.
+                    Err(error) if this.shell.is_some() => {
+                        window.push_notification(Notification::error(error), cx);
+                    }
+                    Err(error) => {
+                        this.error = Some(error);
+                        this.load_recent(cx);
+                    }
                 }
 
                 cx.notify();
@@ -351,23 +425,12 @@ impl Workbench {
     fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let recent = self.recent.iter().map(|workspace| {
             let path = workspace.path.clone();
-            let id = SharedString::from(format!("recent-{}", path.display()));
 
-            Button::new(id)
-                .ghost()
-                .w_full()
-                .justify_start()
-                .child(
-                    v_flex().items_start().child(workspace.name.clone()).child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().muted_foreground)
-                            .child(path.display().to_string()),
-                    ),
-                )
-                .on_click(cx.listener(move |this, _, window, cx| {
+            workspace_switcher::recent_workspace_button("recent", workspace, cx).on_click(
+                cx.listener(move |this, _, window, cx| {
                     this.open_path(path.clone(), None, window, cx);
-                }))
+                }),
+            )
         });
 
         v_flex()
@@ -381,6 +444,7 @@ impl Workbench {
                     .max_w_full()
                     .p_6()
                     .gap_6()
+                    .child(img(LOGO_PATH).size(px(96.)))
                     .child(
                         v_flex()
                             .gap_1()
@@ -461,6 +525,9 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
                 this.prompt_and_open(true, window, cx)
             }))
+            .on_action(cx.listener(|this, _: &SwitchWorkspace, window, cx| {
+                this.switch_workspace(window, cx)
+            }))
             .on_action(
                 cx.listener(|this, _: &CloseWorkspace, window, cx| {
                     this.close_workspace(window, cx)
@@ -489,6 +556,7 @@ impl Render for Workbench {
             )
             .map(|this| match &self.shell {
                 Some(shell) => this.child(shell.clone()),
+                None if self.is_restoring => this,
                 None => this.child(self.render_welcome(cx)),
             })
     }

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>dev.qwerio.Qwerio</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>Qwerio</name>
+  <summary>Browse databases beside your queries and notes</summary>
+  <description>
+    <p>
+      Qwerio is a database workspace for PostgreSQL and SQLite. It keeps
+      connections, SQL documents, and Markdown notes together in a folder,
+      lets you browse tables and their relationships, and runs statements
+      against an explicitly chosen connection.
+    </p>
+  </description>
+  <launchable type="desktop-id">dev.qwerio.Qwerio.desktop</launchable>
+  <provides>
+    <binary>qwerio</binary>
+  </provides>
+  <categories>
+    <category>Development</category>
+    <category>Database</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-10-18"/>
+  </releases>
+</component>

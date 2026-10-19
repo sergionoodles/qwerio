@@ -31,6 +31,11 @@ use crate::error::map_error;
 use crate::session::SqliteSession;
 use crate::worker::Worker;
 
+/// SQLite's storage classes, offered for new columns.
+const COLUMN_TYPES: [&str; 5] = ["TEXT", "INTEGER", "REAL", "NUMERIC", "BLOB"];
+/// An INTEGER PRIMARY KEY aliases the rowid, so SQLite assigns its values.
+const KEY_COLUMN_TYPE: &str = "INTEGER";
+
 pub struct SqliteDriver {
     capabilities: DatabaseCapabilities,
 }
@@ -48,6 +53,8 @@ impl SqliteDriver {
                 filter_operators: FilterOperator::ALL.to_vec(),
                 unicode_case_folding: false,
                 errors_abort_transactions: false,
+                column_types: COLUMN_TYPES.iter().map(|name| (*name).to_owned()).collect(),
+                key_column_type: KEY_COLUMN_TYPE.to_owned(),
             },
         }
     }
