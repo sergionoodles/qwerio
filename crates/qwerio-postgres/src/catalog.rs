@@ -3,6 +3,7 @@
 
 use qwerio_core::catalog::{ColumnInfo, ForeignKeyInfo, KeyInfo, ObjectDetails};
 use qwerio_core::error::{DatabaseError, DbResult, ErrorKind};
+use qwerio_core::ids::ConnectionId;
 use qwerio_core::resource::{
     CatalogEntry, CatalogEntryKind, CatalogPath, EntryAccess, ObjectKind, ObjectRef,
 };
@@ -381,6 +382,79 @@ async fn foreign_keys(
                     name: row.try_get(2).map_err(get_error)?,
                 },
                 referenced_columns: row.try_get(5).map_err(get_error)?,
+            })
+        })
+        .collect()
+}
+
+/// Every foreign key declared on a relation in one schema, including keys
+/// that reference relations in other schemas.
+pub(crate) async fn relationships(
+    client: &Client,
+    connection: ConnectionId,
+    session_database: &str,
+    path: &CatalogPath,
+) -> DbResult<Vec<ForeignKeyInfo>> {
+    let namespace = path.namespace.as_deref().ok_or_else(|| {
+        DatabaseError::invalid_request("PostgreSQL relationships are listed per schema")
+    })?;
+
+    if let Some(database) = &path.database {
+        ensure_session_database(session_database, database)?;
+    }
+
+    let rows = client
+        .query(
+            "SELECT con.conname, sc.relname, sc.relkind::text, \
+                    rn.nspname, rc.relname, rc.relkind::text, \
+                    ARRAY(SELECT a.attname::text \
+                          FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, position) \
+                          JOIN pg_catalog.pg_attribute a \
+                            ON a.attrelid = con.conrelid AND a.attnum = k.attnum \
+                          ORDER BY k.position), \
+                    ARRAY(SELECT a.attname::text \
+                          FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, position) \
+                          JOIN pg_catalog.pg_attribute a \
+                            ON a.attrelid = con.confrelid AND a.attnum = k.attnum \
+                          ORDER BY k.position) \
+             FROM pg_catalog.pg_constraint con \
+             JOIN pg_catalog.pg_class sc ON sc.oid = con.conrelid \
+             JOIN pg_catalog.pg_namespace sn ON sn.oid = sc.relnamespace \
+             JOIN pg_catalog.pg_class rc ON rc.oid = con.confrelid \
+             JOIN pg_catalog.pg_namespace rn ON rn.oid = rc.relnamespace \
+             WHERE sn.nspname = $1 AND con.contype = 'f' AND NOT sc.relispartition \
+             ORDER BY sc.relname, con.conname",
+            &[&namespace],
+        )
+        .await
+        .map_err(|error| map_error(error, None))?;
+
+    let database = path.database.clone();
+
+    rows.iter()
+        .map(|row| {
+            let get_error = |error| map_error(error, None);
+            let table_kind: String = row.try_get(2).map_err(get_error)?;
+            let referenced_kind: String = row.try_get(5).map_err(get_error)?;
+
+            Ok(ForeignKeyInfo {
+                name: row.try_get(0).map_err(get_error)?,
+                table: ObjectRef {
+                    connection,
+                    database: database.clone(),
+                    namespace: Some(namespace.to_owned()),
+                    kind: object_kind(&table_kind),
+                    name: row.try_get(1).map_err(get_error)?,
+                },
+                columns: row.try_get(6).map_err(get_error)?,
+                referenced_table: ObjectRef {
+                    connection,
+                    database: database.clone(),
+                    namespace: Some(row.try_get(3).map_err(get_error)?),
+                    kind: object_kind(&referenced_kind),
+                    name: row.try_get(4).map_err(get_error)?,
+                },
+                referenced_columns: row.try_get(7).map_err(get_error)?,
             })
         })
         .collect()

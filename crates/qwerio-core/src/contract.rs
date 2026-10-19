@@ -388,6 +388,22 @@ pub async fn catalog_describes_composite_keys_and_relationships(context: Context
     close(session.as_ref()).await;
 }
 
+pub async fn catalog_lists_relationships_in_a_container(context: Context) {
+    let session = context.browser().await;
+    let relationships = timed(session.relationships(&context.path))
+        .await
+        .expect("relationships");
+
+    assert_eq!(relationships.len(), 1);
+    let foreign_key = &relationships[0];
+    assert_eq!(foreign_key.table.name, "lines");
+    assert_eq!(foreign_key.columns, vec!["order_year", "order_no"]);
+    assert_eq!(foreign_key.referenced_table.name, "orders");
+    assert_eq!(foreign_key.referenced_columns, vec!["year", "number"]);
+
+    close(session.as_ref()).await;
+}
+
 pub async fn catalog_reports_missing_objects(context: Context) {
     let session = context.browser().await;
     let missing = context.object(ObjectKind::Table, "does_not_exist");
@@ -1107,6 +1123,7 @@ macro_rules! contract_tests {
         $crate::contract_tests!(@tests $fixture;
             catalog_lists_tables_and_views,
             catalog_describes_composite_keys_and_relationships,
+            catalog_lists_relationships_in_a_container,
             catalog_reports_missing_objects,
             results_keep_duplicate_column_names,
             values_distinguish_null_empty_and_exact_numbers,

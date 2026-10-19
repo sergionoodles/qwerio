@@ -12,7 +12,7 @@ use qwerio_app::schema::apply_schema_change;
 use qwerio_app::services::ResolvedConnection;
 use qwerio_app::{AppError, AppServices};
 use qwerio_core::capabilities::DatabaseCapabilities;
-use qwerio_core::catalog::ObjectDetails;
+use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
 use qwerio_core::ddl::SchemaChange;
 use qwerio_core::driver::DatabaseSession;
 use qwerio_core::ids::ConnectionId;
@@ -35,9 +35,9 @@ struct CatalogKey {
 }
 
 #[derive(Clone, Debug)]
-pub enum CatalogLoad {
+pub enum CatalogLoad<T> {
     Loading,
-    Loaded(Arc<[CatalogEntry]>),
+    Loaded(T),
     Failed(SharedString),
 }
 
@@ -64,7 +64,8 @@ pub struct WorkspaceModel {
     workspace: Arc<Mutex<Workspace>>,
     manifest: Arc<Manifest>,
     root: PathBuf,
-    catalogs: HashMap<CatalogKey, CatalogLoad>,
+    catalogs: HashMap<CatalogKey, CatalogLoad<Arc<[CatalogEntry]>>>,
+    relationships: HashMap<CatalogKey, CatalogLoad<Arc<[ForeignKeyInfo]>>>,
     details: HashMap<ObjectRef, Arc<ObjectDetails>>,
     untracked: Arc<[String]>,
     missing: HashSet<DocumentId>,
@@ -152,6 +153,7 @@ impl WorkspaceModel {
                     manifest,
                     root,
                     catalogs: HashMap::new(),
+                    relationships: HashMap::new(),
                     details: HashMap::new(),
                     untracked: opened.untracked.into(),
                     missing: opened.missing,
@@ -283,9 +285,79 @@ impl WorkspaceModel {
         .detach();
     }
 
+    /// The foreign keys declared in a container; `Loading` until
+    /// [`Self::ensure_relationships`] finishes.
+    pub fn relationships(
+        &self,
+        connection: ConnectionId,
+        path: &CatalogPath,
+    ) -> CatalogLoad<Arc<[ForeignKeyInfo]>> {
+        let key = CatalogKey {
+            connection,
+            path: path.clone(),
+        };
+
+        self.relationships
+            .get(&key)
+            .cloned()
+            .unwrap_or(CatalogLoad::Loading)
+    }
+
+    /// Loads a container's foreign keys once; `force` reloads them.
+    pub fn ensure_relationships(
+        &mut self,
+        connection: ConnectionId,
+        path: CatalogPath,
+        force: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.bound.contains(&connection) {
+            return;
+        }
+
+        let key = CatalogKey {
+            connection,
+            path: path.clone(),
+        };
+        let current = self.relationships.get(&key);
+        let should_load = force || matches!(current, None | Some(CatalogLoad::Failed(_)));
+
+        if !should_load || matches!(current, Some(CatalogLoad::Loading)) {
+            return;
+        }
+
+        self.relationships.insert(key.clone(), CatalogLoad::Loading);
+        cx.notify();
+
+        let session = self.browse_session(connection, path.database.clone(), cx);
+
+        cx.spawn(async move |this, cx| {
+            let result = match session.await {
+                Ok(session) => session
+                    .relationships(&path)
+                    .await
+                    .map_err(|error| SharedString::from(error.message)),
+                Err(error) => Err(error),
+            };
+
+            this.update(cx, |this, cx| {
+                let load = match result {
+                    Ok(keys) => CatalogLoad::Loaded(keys.into()),
+                    Err(error) => CatalogLoad::Failed(error),
+                };
+                this.relationships.insert(key, load);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Drops cached catalog listings and metadata for a connection.
     pub fn forget_connection_cache(&mut self, connection: ConnectionId, cx: &mut Context<Self>) {
         self.catalogs.retain(|key, _| key.connection != connection);
+        self.relationships
+            .retain(|key, _| key.connection != connection);
         self.details
             .retain(|object, _| object.connection != connection);
         cx.notify();

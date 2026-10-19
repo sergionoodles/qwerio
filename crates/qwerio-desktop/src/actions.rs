@@ -43,6 +43,7 @@ actions!(
         TogglePreview,
         AddToFavorites,
         ToggleExplorerLayout,
+        ShowRelationshipGraph,
         UseSystemTheme,
         UseLightTheme,
         UseDarkTheme,

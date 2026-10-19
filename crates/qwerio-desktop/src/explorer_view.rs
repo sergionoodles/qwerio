@@ -1,6 +1,13 @@
 //! The file-manager view of a container: the workspace root, a folder, a
 //! connection, a database, or a schema. Tables and documents share one list;
-//! double-click or Enter opens the selection.
+//! double-click or Enter opens the selection. Containers of tables and views
+//! can also show the relationships between them as a graph.
+
+mod graph;
+
+#[cfg(test)]
+pub(crate) use graph::node_widths;
+mod icon_label;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
@@ -11,9 +18,9 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, ScrollStrategy,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _,
-    UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
+    InteractiveElement as _, IntoElement, KeyContext, ParentElement as _, Render, Role,
+    ScrollStrategy, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription,
+    TestSupportExt as _, UniformListScrollHandle, WeakEntity, Window, div, uniform_list,
 };
 use std::sync::Arc;
 
@@ -38,11 +45,18 @@ gpui_kit::actions!(
         SelectFirst,
         SelectLast,
         OpenSelected,
-        OpenSelectedInNewTab
+        OpenSelectedInNewTab,
+        ZoomIn,
+        ZoomOut,
+        ResetZoom
     ]
 );
 
 pub const EXPLORER_CONTEXT: &str = "Explorer";
+
+/// Added to the explorer's key context while it shows the graph, so zoom
+/// keys win over the workbench's text size keys only there.
+const GRAPH_CONTEXT: &str = "graph";
 
 pub fn bind_keys(cx: &mut App) {
     let context = Some(EXPLORER_CONTEXT);
@@ -55,6 +69,14 @@ pub fn bind_keys(cx: &mut App) {
         gpui_kit::KeyBinding::new("enter", OpenSelected, context),
         gpui_kit::KeyBinding::new("secondary-enter", OpenSelectedInNewTab, context),
     ]);
+
+    let graph = Some("Explorer && graph");
+    cx.bind_keys([
+        gpui_kit::KeyBinding::new("secondary-=", ZoomIn, graph),
+        gpui_kit::KeyBinding::new("secondary-+", ZoomIn, graph),
+        gpui_kit::KeyBinding::new("secondary--", ZoomOut, graph),
+        gpui_kit::KeyBinding::new("secondary-0", ResetZoom, graph),
+    ]);
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -62,6 +84,8 @@ pub enum ExplorerLayout {
     #[default]
     Details,
     Icons,
+    /// Tables and views with lines for their foreign keys.
+    Graph,
 }
 
 pub struct ExplorerView {
@@ -72,6 +96,8 @@ pub struct ExplorerView {
     status: ListingStatus,
     filter: String,
     layout: ExplorerLayout,
+    graph: graph::GraphStatus,
+    graph_viewport: graph::GraphViewport,
     selected_key: Option<String>,
     context_entry: Option<ExplorerEntry>,
     focus_handle: FocusHandle,
@@ -97,6 +123,8 @@ impl ExplorerView {
             status: ListingStatus::Loading,
             filter: String::new(),
             layout,
+            graph: graph::GraphStatus::default(),
+            graph_viewport: graph::GraphViewport::default(),
             selected_key: None,
             context_entry: None,
             focus_handle: cx.focus_handle(),
@@ -121,6 +149,10 @@ impl ExplorerView {
     }
 
     pub fn status_text(&self) -> SharedString {
+        if let Some(text) = self.graph_status_text() {
+            return text;
+        }
+
         match &self.status {
             ListingStatus::Loading => "Loading…".into(),
             ListingStatus::Failed(_) => "Could not load this list".into(),
@@ -145,6 +177,7 @@ impl ExplorerView {
     /// Reloads the listing from the database and the workspace folder.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         self.load_catalog(true, cx);
+        self.load_relationships(true, cx);
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -152,6 +185,8 @@ impl ExplorerView {
         self.all_entries = entries;
         self.status = status;
         self.apply_filter();
+        self.load_relationships(false, cx);
+        self.rebuild_graph(cx);
         cx.emit(ContentEvent::Changed);
         cx.notify();
     }
@@ -164,12 +199,16 @@ impl ExplorerView {
 
         self.filter = filter.to_owned();
         self.apply_filter();
+        self.rebuild_graph(cx);
         cx.emit(ContentEvent::Changed);
         cx.notify();
     }
 
     pub fn set_layout(&mut self, layout: ExplorerLayout, cx: &mut Context<Self>) {
         self.layout = layout;
+        self.load_relationships(false, cx);
+        self.rebuild_graph(cx);
+        cx.emit(ContentEvent::Changed);
         cx.notify();
     }
 
@@ -534,6 +573,7 @@ impl ExplorerView {
         index: usize,
         entry: ExplorerEntry,
         is_selected: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         v_flex()
@@ -548,14 +588,7 @@ impl ExplorerView {
                 tile.hover(|style| style.bg(cx.theme().list_hover))
             })
             .child(entry_icon(entry.kind, cx).large())
-            .child(
-                div()
-                    .w_full()
-                    .text_sm()
-                    .text_center()
-                    .line_clamp(2)
-                    .child(entry.name.clone()),
-            )
+            .child(icon_label::render(&entry.name, window))
             .children(Self::render_status_badge(&entry, cx))
             .on_any_mouse_down(cx.listener(move |this, _, _, _| {
                 this.context_entry = this.entries.get(index).cloned();
@@ -654,7 +687,7 @@ impl Focusable for ExplorerView {
 }
 
 impl Render for ExplorerView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = self.selected_index();
         let this = cx.entity().downgrade();
         let model = self.model.clone();
@@ -662,7 +695,8 @@ impl Render for ExplorerView {
         let body = if self.entries.is_empty() {
             self.render_empty(cx).into_any_element()
         } else {
-            match self.layout {
+            match self.effective_layout() {
+                ExplorerLayout::Graph => self.render_graph(selected, cx),
                 ExplorerLayout::Details => {
                     let view = cx.entity();
                     uniform_list("explorer-rows", self.entries.len(), move |range, _, cx| {
@@ -694,6 +728,7 @@ impl Render for ExplorerView {
                             index,
                             entry,
                             selected == Some(index),
+                            window,
                             cx,
                         ));
                     }
@@ -709,9 +744,15 @@ impl Render for ExplorerView {
             }
         };
 
+        let mut key_context = KeyContext::new_with_defaults();
+        key_context.add(EXPLORER_CONTEXT);
+        if self.effective_layout() == ExplorerLayout::Graph {
+            key_context.add(GRAPH_CONTEXT);
+        }
+
         div()
             .id("explorer")
-            .key_context(EXPLORER_CONTEXT)
+            .key_context(key_context)
             .track_focus(&self.focus_handle)
             .size_full()
             .min_h_0()
@@ -731,6 +772,9 @@ impl Render for ExplorerView {
             .on_action(
                 cx.listener(|this, _: &OpenSelectedInNewTab, _, cx| this.open_selected(true, cx)),
             )
+            .on_action(cx.listener(|this, _: &ZoomIn, _, cx| this.zoom_graph_in(cx)))
+            .on_action(cx.listener(|this, _: &ZoomOut, _, cx| this.zoom_graph_out(cx)))
+            .on_action(cx.listener(|this, _: &ResetZoom, _, cx| this.reset_graph_zoom(cx)))
             .on_action(cx.listener(|this, _: &AddToFavorites, _, cx| {
                 let location = this.location.clone();
                 cx.emit(ContentEvent::AddFavorite(location));

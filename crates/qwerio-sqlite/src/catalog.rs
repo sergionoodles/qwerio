@@ -350,6 +350,45 @@ fn referencing_keys(connection: &Connection, object: &ObjectRef) -> DbResult<Vec
     group_foreign_keys(connection, object.connection, rows)
 }
 
+/// Every foreign key in the database; SQLite has only the root container.
+pub(crate) fn relationships(
+    connection: &Connection,
+    connection_id: ConnectionId,
+    path: &CatalogPath,
+) -> DbResult<Vec<ForeignKeyInfo>> {
+    if path.database.is_some() || path.namespace.is_some() {
+        return Err(DatabaseError::new(
+            ErrorKind::NotFound,
+            "SQLite databases have no nested databases or schemas",
+        ));
+    }
+
+    let mut statement = connection
+        .prepare(
+            "SELECT m.name, f.id, f.\"table\", f.\"from\", f.\"to\" \
+             FROM main.sqlite_schema AS m, pragma_foreign_key_list(m.name, 'main') AS f \
+             WHERE m.type = 'table' \
+             ORDER BY m.name, f.id, f.seq",
+        )
+        .map_err(map_error)?;
+
+    let rows = statement
+        .query_map([], |row| {
+            Ok(ForeignKeyRow {
+                table: row.get(0)?,
+                id: row.get(1)?,
+                referenced_table: row.get(2)?,
+                from: row.get(3)?,
+                to: row.get(4)?,
+            })
+        })
+        .map_err(map_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(map_error)?;
+
+    group_foreign_keys(connection, connection_id, rows)
+}
+
 /// Groups pragma rows by (table, id) into ordered composite keys. A missing
 /// `to` column means the referenced table's primary key.
 fn group_foreign_keys(

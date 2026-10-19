@@ -11,6 +11,7 @@ mod filter_panel;
 mod grid;
 mod platform;
 mod schema_dialog;
+mod schema_graph;
 mod services;
 mod shell;
 mod sql_console;

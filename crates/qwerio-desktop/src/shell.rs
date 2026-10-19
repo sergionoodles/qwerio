@@ -1589,6 +1589,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Toggle Sidebar", Box::new(ToggleSidebar)),
         ("Toggle Inspector", Box::new(ToggleInspector)),
         ("Toggle List or Icons", Box::new(ToggleExplorerLayout)),
+        ("Show Relationship Graph", Box::new(ShowRelationshipGraph)),
         ("Add to Favorites", Box::new(AddToFavorites)),
         ("Refresh", Box::new(Refresh)),
         ("Save", Box::new(Save)),
@@ -1778,9 +1779,12 @@ impl Render for WorkspaceShell {
             .on_action(cx.listener(|this, _: &ToggleExplorerLayout, _, cx| {
                 let layout = match this.explorer_layout {
                     ExplorerLayout::Details => ExplorerLayout::Icons,
-                    ExplorerLayout::Icons => ExplorerLayout::Details,
+                    ExplorerLayout::Icons | ExplorerLayout::Graph => ExplorerLayout::Details,
                 };
                 this.set_layout(layout, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowRelationshipGraph, _, cx| {
+                this.set_layout(ExplorerLayout::Graph, cx);
             }))
             .child(self.render_toolbar(window, cx))
             .child(div().flex_1().min_h_0().child(body))

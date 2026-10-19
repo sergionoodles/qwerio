@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 
 use async_trait::async_trait;
-use qwerio_core::catalog::ObjectDetails;
+use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
 use qwerio_core::driver::{
     CancelOutcome, DatabaseCatalog, DatabaseSession, QueryRequest, TableBrowser,
 };
@@ -193,6 +193,19 @@ impl DatabaseCatalog for PostgresSession {
         let object = object.clone();
         self.with_client(move |client| {
             Box::pin(async move { catalog::describe(client, &object).await })
+        })
+        .await
+    }
+
+    async fn relationships(&self, path: &CatalogPath) -> DbResult<Vec<ForeignKeyInfo>> {
+        let path = path.clone();
+        let database = self.database().to_owned();
+        let connection = self.info.connection;
+
+        self.with_client(move |client| {
+            Box::pin(
+                async move { catalog::relationships(client, connection, &database, &path).await },
+            )
         })
         .await
     }

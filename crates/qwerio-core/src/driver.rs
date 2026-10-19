@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::capabilities::DatabaseCapabilities;
-use crate::catalog::ObjectDetails;
+use crate::catalog::{ForeignKeyInfo, ObjectDetails};
 use crate::connection::{ConnectionDescriptor, ConnectionOptions, Credentials, EngineKind};
 use crate::error::DbResult;
 use crate::ids::RequestId;
@@ -79,6 +79,10 @@ pub trait DatabaseCatalog: Send + Sync {
     async fn list(&self, path: &CatalogPath) -> DbResult<Vec<CatalogEntry>>;
 
     async fn describe(&self, object: &ObjectRef) -> DbResult<ObjectDetails>;
+
+    /// Every foreign key declared on an object in the container at `path`,
+    /// in one call, for diagrams of the whole container.
+    async fn relationships(&self, path: &CatalogPath) -> DbResult<Vec<ForeignKeyInfo>>;
 }
 
 /// Bounded, filtered, sorted pages generated from structured requests.

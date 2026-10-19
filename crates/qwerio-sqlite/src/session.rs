@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use qwerio_core::catalog::ObjectDetails;
+use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
 use qwerio_core::driver::{
     CancelOutcome, DatabaseCatalog, DatabaseSession, QueryRequest, TableBrowser,
 };
@@ -121,6 +121,14 @@ impl DatabaseCatalog for SqliteSession {
         let object = object.clone();
         self.worker
             .call(move |connection| catalog::describe(connection, &object))
+            .await
+    }
+
+    async fn relationships(&self, path: &CatalogPath) -> DbResult<Vec<ForeignKeyInfo>> {
+        let path = path.clone();
+        let connection_id = self.info.connection;
+        self.worker
+            .call(move |connection| catalog::relationships(connection, connection_id, &path))
             .await
     }
 }

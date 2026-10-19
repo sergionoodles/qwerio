@@ -8,7 +8,6 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::toolbar::{Toolbar, ToolbarGroup};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName};
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{Context, IntoElement, ParentElement as _, Styled as _, Window, div};
 use qwerio_app::navigation::ViewState;
 use qwerio_core::resource::ObjectKind;
@@ -69,9 +68,7 @@ impl WorkspaceShell {
                     .tooltip("Refresh")
                     .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
             )
-            .when_some(self.render_layout_toggle(cx), |group, toggle| {
-                group.child(toggle)
-            })
+            .children(self.render_layout_buttons(cx))
             .child(
                 Button::new("palette")
                     .ghost()
@@ -205,29 +202,48 @@ impl WorkspaceShell {
             )
     }
 
-    fn render_layout_toggle(&self, cx: &mut Context<Self>) -> Option<Button> {
-        if !matches!(self.focused_content(), Some(TabContent::Explorer(_))) {
-            return None;
-        }
+    /// List, icons, or relationship graph; the graph only where the explorer
+    /// lists tables or views.
+    fn render_layout_buttons(&self, cx: &mut Context<Self>) -> Vec<Button> {
+        let Some(TabContent::Explorer(explorer)) = self.focused_content() else {
+            return Vec::new();
+        };
 
-        let is_icons = self.explorer_layout == ExplorerLayout::Icons;
-        let (icon, tooltip, next) = if is_icons {
-            (LucideIcon::List, "Show as list", ExplorerLayout::Details)
-        } else {
+        let explorer = explorer.read(cx);
+        let current = explorer.effective_layout();
+        let can_show_graph = explorer.can_show_graph();
+
+        [
             (
+                "layout-details",
+                LucideIcon::List,
+                "Show as list",
+                ExplorerLayout::Details,
+            ),
+            (
+                "layout-icons",
                 LucideIcon::LayoutGrid,
                 "Show as icons",
                 ExplorerLayout::Icons,
-            )
-        };
-
-        Some(
-            Button::new("toggle-layout")
+            ),
+            (
+                "layout-graph",
+                LucideIcon::Network,
+                "Show relationships",
+                ExplorerLayout::Graph,
+            ),
+        ]
+        .into_iter()
+        .map(|(id, icon, tooltip, layout)| {
+            Button::new(id)
                 .ghost()
                 .icon(Icon::new(icon))
                 .tooltip(tooltip)
-                .on_click(cx.listener(move |this, _, _, cx| this.set_layout(next, cx))),
-        )
+                .toggled(current == layout)
+                .disabled(layout == ExplorerLayout::Graph && !can_show_graph)
+                .on_click(cx.listener(move |this, _, _, cx| this.set_layout(layout, cx)))
+        })
+        .collect()
     }
 }
 
