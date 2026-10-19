@@ -24,12 +24,17 @@ pub fn recent_workspace_button(id_prefix: &str, workspace: &RecentWorkspace, cx:
         .justify_start()
         .accessibility_label(workspace.name.clone())
         .child(
-            v_flex().items_start().child(workspace.name.clone()).child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child(workspace.path.display().to_string()),
-            ),
+            v_flex()
+                .w_full()
+                .items_start()
+                .text_left()
+                .child(workspace.name.clone())
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(workspace.path.display().to_string()),
+                ),
         )
 }
 
