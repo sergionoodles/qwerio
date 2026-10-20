@@ -11,6 +11,9 @@ const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const REFUSED_ADDRESS: IpAddr = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2));
 const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 4, 210, 22, 47];
 const AUTHENTICATED_AND_READY: &[u8] = &[b'R', 0, 0, 0, 8, 0, 0, 0, 0, b'Z', 0, 0, 0, 5, b'I'];
+const STARTUP_LENGTH_BYTES: usize = std::mem::size_of::<u32>();
+const STARTUP_ERROR_MESSAGE: &str =
+    "unsupported startup parameter in options: default_transaction_read_only";
 
 fn config(port: u16, ssl_mode: SslMode) -> Config {
     let mut config = Config::new();
@@ -59,6 +62,44 @@ async fn tls_rejection_survives_other_unreachable_addresses_in_either_order() {
         assert_eq!(error.kind, ErrorKind::Tls);
         assert!(error.message.contains("server does not support TLS"));
         assert!(error.message.contains("No encryption"));
+    }
+}
+
+#[tokio::test]
+async fn server_connection_errors_survive_other_unreachable_addresses_in_either_order() {
+    for refused_first in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let endpoint = listener.local_addr().expect("local address");
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept");
+            let length = stream.read_u32().await.expect("startup length");
+            let mut startup =
+                vec![0; usize::try_from(length).expect("length") - STARTUP_LENGTH_BYTES];
+            stream.read_exact(&mut startup).await.expect("startup");
+            let fields = format!("SFATAL\0C08P01\0M{STARTUP_ERROR_MESSAGE}\0\0");
+            let length =
+                u32::try_from(fields.len() + STARTUP_LENGTH_BYTES).expect("error length");
+            stream.write_all(b"E").await.expect("error type");
+            stream.write_u32(length).await.expect("error length");
+            stream.write_all(fields.as_bytes()).await.expect("error");
+        });
+        let addresses = if refused_first {
+            [REFUSED_ADDRESS, endpoint.ip()]
+        } else {
+            [endpoint.ip(), REFUSED_ADDRESS]
+        };
+        let error = connect_addresses(
+            &config(endpoint.port(), SslMode::Disable),
+            addresses,
+            NoTls,
+        )
+        .await
+        .err()
+        .expect("server rejects startup");
+        server.await.expect("server task");
+
+        assert_eq!(error.code.as_deref(), Some("08P01"), "{error}");
+        assert_eq!(error.message, STARTUP_ERROR_MESSAGE);
     }
 }
 

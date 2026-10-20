@@ -88,12 +88,16 @@ pub fn open(
             .child(form.clone())
             .footer(
                 h_flex()
+                    .w_full()
                     .gap_2()
                     .justify_end()
                     .child(
-                        DialogClose::new()
-                            .child(Button::new("cancel-connection").ghost().label("Cancel")),
+                        div().flex_none().child(
+                            DialogClose::new()
+                                .child(Button::new("cancel-connection").ghost().label("Cancel")),
+                        ),
                     )
+                    .child(div().flex_1())
                     .child(
                         Button::new("test-connection")
                             .outline()

@@ -11,6 +11,21 @@ const NEW_CONNECTION_NAME: &str = "sqlite@shop.sqlite";
 /// The engine list starts on PostgreSQL; SQLite is next.
 const POSTGRES_TO_SQLITE_STEPS: usize = 1;
 
+fn assert_footer_alignment(window: AnyWindowHandle, cx: &mut TestAppContext) {
+    interact(window, cx, |window, _| {
+        let name = window.find("connection-name").bounds();
+        let cancel = window.find("cancel-connection").bounds();
+        let test = window.find("test-connection").bounds();
+        let save = window.find("save-connection").bounds();
+
+        assert_eq!(cancel.origin.x, name.origin.x);
+        assert!(cancel.size.width < name.size.width / 2.);
+        assert!(test.origin.x > name.center().x);
+        assert!(test.right() < save.origin.x);
+        assert_eq!(save.right(), name.right());
+    });
+}
+
 fn open_sidebar_connection_settings(fixture: &Fixture, cx: &mut TestAppContext) -> AnyWindowHandle {
     init_app(fixture.services.clone(), cx);
     let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
@@ -55,6 +70,7 @@ fn open_sidebar_connection_settings(fixture: &Fixture, cx: &mut TestAppContext) 
 fn edits_a_connection_from_the_sidebar(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let window = open_sidebar_connection_settings(&fixture, cx);
+    assert_footer_alignment(window, cx);
     let original = Workspace::open(&fixture.root).expect("workspace");
     let connection = original.manifest().connections[0].id;
     let replacement = fixture.database.with_file_name("replacement.sqlite");
@@ -140,6 +156,7 @@ fn adds_a_sqlite_connection_through_the_dialog(cx: &mut TestAppContext) {
     wait_until(window, cx, "the dialog opens", |window, _| {
         window.try_find("connection-engine").is_some()
     });
+    assert_footer_alignment(window, cx);
     choose_option(window, cx, "connection-engine", POSTGRES_TO_SQLITE_STEPS);
     wait_until(window, cx, "SQLite is chosen", |window, _| {
         window.try_find("connection-file").is_some()
