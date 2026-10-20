@@ -451,6 +451,45 @@ async fn read_only_sessions_report_the_weaker_enforcement() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn session_defaults_match_the_requested_access_and_purpose() {
+    const BROWSE_TIMEOUT_MILLISECONDS: i64 = 60_000;
+    let database = TestDatabase::new().await;
+    let cases = [
+        (
+            SessionPurpose::Browse,
+            AccessMode::ReadOnly,
+            true,
+            BROWSE_TIMEOUT_MILLISECONDS,
+        ),
+        (SessionPurpose::Console, AccessMode::ReadWrite, false, 0),
+        (
+            SessionPurpose::Browse,
+            AccessMode::ReadWrite,
+            false,
+            BROWSE_TIMEOUT_MILLISECONDS,
+        ),
+        (SessionPurpose::Console, AccessMode::ReadOnly, true, 0),
+    ];
+
+    for (purpose, access, is_read_only, timeout) in cases {
+        let session = database.open(purpose, access).await;
+        let settings = values(
+            session.as_ref(),
+            "SELECT current_setting('default_transaction_read_only') = 'on', \
+             (SELECT setting::integer FROM pg_settings WHERE name = 'statement_timeout')",
+        )
+        .await;
+        assert_eq!(
+            settings,
+            vec![Value::Bool(is_read_only), Value::Integer(timeout)]
+        );
+        close(session.as_ref()).await;
+    }
+
+    database.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn rendered_create_database_runs_outside_a_transaction() {
     let database = TestDatabase::new().await;
     let created = format!("qwerio_test_{}", ConnectionId::new().as_uuid().simple());

@@ -77,8 +77,7 @@ async fn server_connection_errors_survive_other_unreachable_addresses_in_either_
                 vec![0; usize::try_from(length).expect("length") - STARTUP_LENGTH_BYTES];
             stream.read_exact(&mut startup).await.expect("startup");
             let fields = format!("SFATAL\0C08P01\0M{STARTUP_ERROR_MESSAGE}\0\0");
-            let length =
-                u32::try_from(fields.len() + STARTUP_LENGTH_BYTES).expect("error length");
+            let length = u32::try_from(fields.len() + STARTUP_LENGTH_BYTES).expect("error length");
             stream.write_all(b"E").await.expect("error type");
             stream.write_u32(length).await.expect("error length");
             stream.write_all(fields.as_bytes()).await.expect("error");
@@ -88,14 +87,10 @@ async fn server_connection_errors_survive_other_unreachable_addresses_in_either_
         } else {
             [endpoint.ip(), REFUSED_ADDRESS]
         };
-        let error = connect_addresses(
-            &config(endpoint.port(), SslMode::Disable),
-            addresses,
-            NoTls,
-        )
-        .await
-        .err()
-        .expect("server rejects startup");
+        let error = connect_addresses(&config(endpoint.port(), SslMode::Disable), addresses, NoTls)
+            .await
+            .err()
+            .expect("server rejects startup");
         server.await.expect("server task");
 
         assert_eq!(error.code.as_deref(), Some("08P01"), "{error}");
