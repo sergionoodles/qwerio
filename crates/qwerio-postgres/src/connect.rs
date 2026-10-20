@@ -1,5 +1,6 @@
 //! Establishing PostgreSQL connections with certificate-validating TLS.
 
+use std::net::IpAddr;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -11,7 +12,8 @@ use rustls::crypto::CryptoProvider;
 use rustls::pki_types::CertificateDer;
 use rustls::pki_types::pem::PemObject;
 use tokio_postgres::config::SslMode;
-use tokio_postgres::{CancelToken, Client, Config, NoTls};
+use tokio_postgres::tls::MakeTlsConnect;
+use tokio_postgres::{CancelToken, Client, Config, Connection, NoTls, Socket};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::error::map_error;
@@ -41,19 +43,14 @@ pub(crate) async fn connect(request: ConnectRequest<'_>) -> DbResult<Connected> 
 
     let (client, tls) = match &request.options.tls {
         TlsMode::Disable => {
-            let (client, connection) = config
-                .connect(NoTls)
-                .await
-                .map_err(|error| map_error(error, None))?;
+            let (client, connection) = connect_transport(&config, request.options, NoTls).await?;
             tokio::spawn(connection);
             (client, None)
         }
         TlsMode::VerifyFull { ca_file } => {
             let tls = tls_connector(ca_file.as_deref())?;
-            let (client, connection) = config
-                .connect(tls.clone())
-                .await
-                .map_err(|error| map_error(error, None))?;
+            let (client, connection) =
+                connect_transport(&config, request.options, tls.clone()).await?;
             tokio::spawn(connection);
             (client, Some(tls))
         }
@@ -71,6 +68,72 @@ pub(crate) async fn connect(request: ConnectRequest<'_>) -> DbResult<Connected> 
         tls,
         server_version,
     })
+}
+
+async fn connect_transport<T>(
+    config: &Config,
+    options: &PostgresOptions,
+    tls: T,
+) -> DbResult<(Client, Connection<Socket, T::Stream>)>
+where
+    T: MakeTlsConnect<Socket> + Clone,
+{
+    if options.is_unix_socket() {
+        return config
+            .connect(tls)
+            .await
+            .map_err(|error| map_error(error, None));
+    }
+
+    let addresses = tokio::net::lookup_host((options.host.as_str(), options.port))
+        .await
+        .map_err(|error| {
+            DatabaseError::new(
+                ErrorKind::Connection,
+                format!("Could not resolve the database host: {error}"),
+            )
+        })?;
+
+    connect_addresses(config, addresses.map(|address| address.ip()), tls).await
+}
+
+async fn connect_addresses<T>(
+    config: &Config,
+    addresses: impl IntoIterator<Item = IpAddr>,
+    tls: T,
+) -> DbResult<(Client, Connection<Socket, T::Stream>)>
+where
+    T: MakeTlsConnect<Socket> + Clone,
+{
+    let mut failure: Option<DatabaseError> = None;
+
+    for address in addresses {
+        let mut address_config = config.clone();
+        // Keep the original hostname for certificate validation and SNI.
+        address_config.hostaddr(address);
+
+        match address_config.connect(tls.clone()).await {
+            Ok(connected) => return Ok(connected),
+            Err(error) => {
+                let mapped = map_error(error, None);
+                // A later unreachable address must not hide a TLS or server
+                // error from an address we did reach.
+                if failure
+                    .as_ref()
+                    .is_none_or(|previous| previous.kind == ErrorKind::Connection)
+                {
+                    failure = Some(mapped);
+                }
+            }
+        }
+    }
+
+    Err(failure.unwrap_or_else(|| {
+        DatabaseError::new(
+            ErrorKind::Connection,
+            "The database host did not resolve to any addresses",
+        )
+    }))
 }
 
 fn build_config(request: &ConnectRequest<'_>) -> Config {
@@ -173,3 +236,6 @@ fn read_certificates(path: &Path) -> DbResult<Vec<CertificateDer<'static>>> {
 fn tls_error(error: rustls::Error) -> DatabaseError {
     DatabaseError::new(ErrorKind::Tls, format!("TLS setup failed: {error}"))
 }
+
+#[cfg(test)]
+mod tests;

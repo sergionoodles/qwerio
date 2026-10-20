@@ -28,6 +28,13 @@ use crate::result::{
 use crate::session::{AccessMode, SessionPurpose, TransactionState};
 use crate::value::Value;
 
+mod edits;
+
+pub use edits::{
+    row_edits_delete_update_and_insert_in_order, row_edits_save_all_or_nothing,
+    row_updates_store_values_and_return_rows,
+};
+
 /// Upper bound for any single contract step.
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1151,6 +1158,9 @@ macro_rules! contract_tests {
             relationships_lead_to_referenced_rows,
             stale_continuations_are_rejected,
             schema_changes_create_tables_and_columns,
+            row_updates_store_values_and_return_rows,
+            row_edits_delete_update_and_insert_in_order,
+            row_edits_save_all_or_nothing,
         );
     };
     (@tests $fixture:expr; $($name:ident),* $(,)?) => {

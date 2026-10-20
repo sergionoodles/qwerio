@@ -5668,6 +5668,7 @@ dependencies = [
 name = "qwerio-desktop"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "directories",
  "gpui-kit",
  "keyring",
@@ -5718,6 +5719,7 @@ version = "0.1.0"
 dependencies = [
  "notify",
  "qwerio-core",
+ "ring",
  "serde",
  "tempfile",
  "thiserror 2.0.21",

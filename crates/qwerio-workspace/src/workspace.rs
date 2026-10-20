@@ -1,4 +1,4 @@
-//! An open workspace: a user-selected folder and its manifest.
+//! An open workspace file, or a legacy folder and its manifest.
 //!
 //! Every document path is confined to the folder. Manifest changes are saved
 //! atomically and refuse to overwrite a manifest changed by another program.
@@ -30,9 +30,10 @@ const MAX_SCAN_DEPTH: usize = 8;
 
 #[derive(Debug)]
 pub struct Workspace {
-    root: PathBuf,
-    manifest: Manifest,
-    manifest_fingerprint: Fingerprint,
+    pub(crate) root: PathBuf,
+    pub(crate) manifest: Manifest,
+    pub(crate) manifest_fingerprint: Fingerprint,
+    pub(crate) file: Option<crate::file::WorkspaceFile>,
 }
 
 /// An explorer entry that can be moved between placements.
@@ -55,25 +56,43 @@ impl Workspace {
             root,
             manifest,
             manifest_fingerprint,
+            file: None,
         })
     }
 
     pub fn open(root: &Path) -> WorkspaceResult<Self> {
+        let workspace = Self::open_read_only(root, None)?;
+        if !workspace.is_file_workspace() {
+            remove_interrupted_saves(&workspace.root.join(MANIFEST_DIRECTORY))?;
+        }
+        Ok(workspace)
+    }
+
+    /// Reads an import source without changing it or cleaning temporary files.
+    pub fn open_read_only(
+        root: &Path,
+        password: Option<&qwerio_core::connection::Secret>,
+    ) -> WorkspaceResult<Self> {
+        if root.is_file() {
+            return Self::open_file(root, password);
+        }
         let root = canonical_directory(root)?;
         let path = manifest_path(&root);
         let loaded = read_document(&path)?;
         let manifest = Manifest::parse(&loaded.text)?;
-        remove_interrupted_saves(&root.join(MANIFEST_DIRECTORY))?;
 
         Ok(Self {
             root,
             manifest,
             manifest_fingerprint: loaded.fingerprint,
+            file: None,
         })
     }
 
     pub fn is_workspace(root: &Path) -> bool {
-        manifest_path(root).is_file()
+        root.extension()
+            .is_some_and(|extension| extension == "qwerio")
+            || manifest_path(root).is_file()
     }
 
     pub fn root(&self) -> &Path {
@@ -85,11 +104,18 @@ impl Workspace {
     }
 
     pub fn manifest_path(&self) -> PathBuf {
-        manifest_path(&self.root)
+        self.file
+            .as_ref()
+            .map_or_else(|| manifest_path(&self.root), |file| file.path.clone())
     }
 
     /// Re-reads the manifest after another program changed it.
     pub fn reload_manifest(&mut self) -> WorkspaceResult<()> {
+        if let Some(file) = &mut self.file {
+            file.reload()?;
+            self.manifest = file.contents.manifest.clone();
+            return Ok(());
+        }
         let loaded = read_document(&self.manifest_path())?;
         self.manifest = Manifest::parse(&loaded.text)?;
         self.manifest_fingerprint = loaded.fingerprint;
@@ -98,12 +124,39 @@ impl Workspace {
 
     /// Applies a change and saves it; on failure the in-memory manifest is
     /// left unchanged.
-    fn update_manifest<T>(
+    pub(crate) fn update_manifest<T>(
         &mut self,
         change: impl FnOnce(&mut Manifest) -> WorkspaceResult<T>,
     ) -> WorkspaceResult<T> {
         let mut updated = self.manifest.clone();
         let output = change(&mut updated)?;
+        updated
+            .label_assignments
+            .retain(|assignment| match assignment.target {
+                crate::labels::LabelTarget::Document { document } => {
+                    updated.documents.iter().any(|entry| entry.id == document)
+                }
+                _ => true,
+            });
+        if let Some(file) = &mut self.file {
+            let mut contents = file.contents.clone();
+            contents.manifest = updated.clone();
+            contents
+                .connections
+                .retain(|connection| updated.connection(connection.id).is_some());
+            contents.documents.retain(|id, _| {
+                updated
+                    .documents
+                    .iter()
+                    .any(|document| document.id.to_string() == *id)
+            });
+            contents
+                .drafts
+                .retain(|id, _| contents.documents.contains_key(id));
+            file.save(contents)?;
+            self.manifest = updated;
+            return Ok(output);
+        }
         let text = updated.to_toml()?;
         let fingerprint = save_document(
             &self.manifest_path(),
@@ -343,6 +396,9 @@ impl Workspace {
             .ok_or_else(|| WorkspaceError::UnsupportedDocument(relative_path.to_path_buf()))?;
         self.ensure_placement_exists(&placement)?;
 
+        if self.file.is_some() {
+            return self.create_embedded_document(relative_path, placement, text);
+        }
         let absolute = resolve_inside(&self.root, relative_path)?;
         let fingerprint = save_document(&absolute, text, SaveExpectation::New)?;
         let id = DocumentId::new();
@@ -373,6 +429,13 @@ impl Workspace {
         path: &Path,
         placement: Placement,
     ) -> WorkspaceResult<DocumentId> {
+        if self.file.is_some() {
+            let loaded = read_document(path)?;
+            let name = path.file_name().ok_or(WorkspaceError::InvalidFile)?;
+            return self
+                .create_embedded_document(Path::new(name), placement, &loaded.text)
+                .map(|(id, _)| id);
+        }
         let relative = if path.is_absolute() {
             relative_to(&self.root, path)?
         } else {
@@ -410,15 +473,34 @@ impl Workspace {
     }
 
     pub fn load_document(&self, id: DocumentId) -> WorkspaceResult<LoadedDocument> {
+        self.manifest
+            .document(id)
+            .ok_or(WorkspaceError::NotFound { kind: "document" })?;
+        if let Some(file) = &self.file {
+            let text = file
+                .contents
+                .documents
+                .get(&id.to_string())
+                .ok_or(WorkspaceError::NotFound { kind: "document" })?
+                .clone();
+            return Ok(LoadedDocument {
+                fingerprint: Fingerprint::of(text.as_bytes()),
+                text,
+                modified: None,
+            });
+        }
         read_document(&self.document_path(id)?)
     }
 
     pub fn save_document(
-        &self,
+        &mut self,
         id: DocumentId,
         text: &str,
         expectation: SaveExpectation,
     ) -> WorkspaceResult<Fingerprint> {
+        if self.file.is_some() {
+            return self.save_embedded_document(id, text, expectation);
+        }
         save_document(&self.document_path(id)?, text, expectation)
     }
 
@@ -428,6 +510,9 @@ impl Workspace {
         DocumentKind::from_path(Path::new(file_name))
             .ok_or_else(|| WorkspaceError::UnsupportedDocument(PathBuf::from(file_name)))?;
 
+        if self.file.is_some() {
+            return self.rename_embedded_document(id, file_name);
+        }
         let current_relative = from_portable(
             &self
                 .manifest
@@ -499,7 +584,7 @@ impl Workspace {
             Ok(())
         })?;
 
-        if delete_file && path.exists() {
+        if self.file.is_none() && delete_file && path.exists() {
             fs::remove_file(&path).map_err(|error| WorkspaceError::io(&path, error))?;
         }
 
@@ -589,6 +674,9 @@ impl Workspace {
     /// Supported document files in the folder that the manifest does not
     /// list, as portable relative paths. Hidden and build folders are skipped.
     pub fn untracked_documents(&self) -> WorkspaceResult<Vec<String>> {
+        if self.file.is_some() {
+            return Ok(Vec::new());
+        }
         let mut found = Vec::new();
         let mut pending = vec![(self.root.clone(), 0)];
         let mut scanned = 0;

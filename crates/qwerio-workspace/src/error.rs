@@ -6,6 +6,15 @@ pub type WorkspaceResult<T> = Result<T, WorkspaceError>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum WorkspaceError {
+    #[error("This workspace requires a password")]
+    PasswordRequired,
+    #[error("The password is incorrect or the workspace is damaged")]
+    Authentication,
+    #[error("The workspace file is invalid or exceeds the supported size")]
+    InvalidFile,
+    #[error("Secure encryption could not be initialized")]
+    Encryption,
+
     #[error("{path}: {source}")]
     Io {
         path: PathBuf,

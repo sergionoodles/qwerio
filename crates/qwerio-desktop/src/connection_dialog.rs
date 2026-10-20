@@ -1,6 +1,6 @@
-//! Creating or editing a connection. The workspace manifest only receives the
-//! connection's name and engine; the address or file stays in this
-//! computer's local state, and the password goes to the platform keychain.
+//! Creating or editing a connection. File workspaces save connection details
+//! and passwords inside the workspace's optional encryption. Legacy folders
+//! retain their machine-local bindings and platform keyring credentials.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -122,8 +122,7 @@ pub fn create_sqlite_database(
     model: &Entity<WorkspaceModel>,
     cx: &mut App,
 ) -> Task<Result<Option<ConnectionId>, SharedString>> {
-    let directory = model.read(cx).root().clone();
-    let services = Arc::clone(model.read(cx).services());
+    let directory = model.read(cx).directory();
     let prompt = cx.prompt_for_new_path(&directory, Some(NEW_SQLITE_FILE_NAME));
     let model = model.clone();
 
@@ -150,14 +149,11 @@ pub fn create_sqlite_database(
         });
         let connection = alias.await?;
 
-        let manifest = model.read_with(cx, |model, _| Arc::clone(model.manifest()));
         let options = ConnectionOptions::Sqlite(SqliteOptions::new(path));
-        cx.background_spawn(async move {
-            services
-                .bind_connection(&manifest, connection, options, None)
-                .map_err(|error| error_text(&error))
-        })
-        .await?;
+        let bind = model.update(cx, |model, cx| {
+            model.bind_connection(connection, options, None, cx)
+        });
+        bind.await?;
 
         model.update(cx, |model, cx| model.set_bound(connection, true, cx));
         Ok(Some(connection))
@@ -288,7 +284,6 @@ impl ConnectionForm {
     ) {
         let model = self.model.read(cx);
         let manifest = Arc::clone(model.manifest());
-        let services = Arc::clone(model.services());
         let Some(alias) = manifest.connection(connection).cloned() else {
             return;
         };
@@ -304,17 +299,16 @@ impl ConnectionForm {
             input.set_value(alias.name.clone(), window, cx)
         });
 
-        let load = cx
-            .background_spawn(async move { services.local_state.binding(manifest.id, connection) });
+        let load = self.model.read(cx).resolve(connection, cx);
 
         cx.spawn_in(window, async move |this, cx| {
-            let Ok(Some(binding)) = load.await else {
+            let Ok(binding) = load.await else {
                 return;
             };
 
             this.update_in(cx, |this, window, cx| {
-                this.has_stored_password = binding.credential.is_some();
-                this.fill(binding.options, window, cx);
+                this.has_stored_password = binding.credentials.password.is_some();
+                this.fill(binding.descriptor.options, window, cx);
                 cx.notify();
             })
             .ok();
@@ -475,7 +469,14 @@ impl ConnectionForm {
         cx.spawn_in(window, async move |this, cx| {
             let password = match secret {
                 Some(secret) => Some(secret),
-                None => stored.await,
+                None => match stored.await {
+                    Ok(password) => password,
+                    Err(error) => {
+                        this.update(cx, |this, cx| this.set_status(error, true, cx))
+                            .ok();
+                        return;
+                    }
+                },
             };
             let result = sessions
                 .test_connection(descriptor, Credentials { password })
@@ -494,17 +495,18 @@ impl ConnectionForm {
     }
 
     /// The stored password when editing and the field was left empty.
-    fn stored_password(&self, cx: &App) -> gpui_kit::Task<Option<Secret>> {
-        let (Some(connection), true) = (self.editing, self.has_stored_password) else {
-            return gpui_kit::Task::ready(None);
+    fn stored_password(&self, cx: &App) -> Task<Result<Option<Secret>, SharedString>> {
+        let Some(connection) = self.editing else {
+            return Task::ready(Ok(None));
         };
-
-        let model = self.model.read(cx);
-        let credentials = Arc::clone(&model.services().credentials);
-        let reference =
-            qwerio_app::credentials::CredentialRef::for_connection(model.manifest().id, connection);
-
-        cx.background_spawn(async move { credentials.load(&reference).ok().flatten() })
+        let storage = self.model.read(cx).storage();
+        cx.background_spawn(async move {
+            storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stored_password(connection)
+                .map_err(|error| error_text(&error))
+        })
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -528,7 +530,6 @@ impl ConnectionForm {
         let editing = self.editing;
         let stored = self.stored_password(cx);
         let model = self.model.clone();
-        let services = Arc::clone(model.read(cx).services());
 
         let alias = model.update(cx, |model, cx| {
             let alias_name = name.clone();
@@ -555,15 +556,18 @@ impl ConnectionForm {
 
             let password = match secret {
                 Some(secret) => Some(secret),
-                None => stored.await,
+                None => match stored.await {
+                    Ok(password) => password,
+                    Err(error) => {
+                        this.update(cx, |this, cx| this.set_status(error, true, cx))
+                            .ok();
+                        return;
+                    }
+                },
             };
 
-            let manifest = model.read_with(cx, |model, _| Arc::clone(model.manifest()));
-
-            let bind = cx.background_spawn(async move {
-                services
-                    .bind_connection(&manifest, connection, options, password)
-                    .map_err(|error| error_text(&error))
+            let bind = model.update(cx, |model, cx| {
+                model.bind_connection(connection, options, password, cx)
             });
 
             match bind.await {
@@ -607,7 +611,7 @@ impl ConnectionForm {
 
     /// Creating a database file is its own action; opening never creates.
     fn create_sqlite_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let directory = self.model.read(cx).root().clone();
+        let directory = self.model.read(cx).directory();
         let prompt = cx.prompt_for_new_path(&directory, Some("database.sqlite"));
 
         cx.spawn_in(window, async move |this, cx| {

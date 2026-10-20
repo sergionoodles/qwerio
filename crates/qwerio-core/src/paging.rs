@@ -16,6 +16,7 @@ use crate::filter::{
 use crate::result::{ColumnDescriptor, Row, estimated_row_bytes};
 use crate::sql::{
     ColumnRef, CompareOp, OBJECT_ALIAS, OrderTerm, Predicate, RenderedSql, SqlDialect, SqlRenderer,
+    row_identity,
 };
 use crate::value::Value;
 
@@ -70,6 +71,9 @@ pub enum PageNotice {
 pub struct Page {
     pub columns: Vec<ColumnDescriptor>,
     pub rows: Vec<Row>,
+    /// Each row's hidden locator value, parallel to `rows`, when rows are
+    /// identified by the locator; empty otherwise.
+    pub row_locators: Vec<Value>,
     pub next: Option<ContinuationToken>,
     pub mode: PagingMode,
     pub notice: Option<PageNotice>,
@@ -224,6 +228,8 @@ impl PagePlan {
         let data_columns = self.details.columns.len();
         let has_more_rows = raw_rows.len() > self.page_size;
         let mut rows = Vec::with_capacity(raw_rows.len().min(self.page_size));
+        let mut row_locators = Vec::new();
+        let locator_position = self.locator_key_position();
         let mut last_key: Option<Vec<Value>> = None;
         let mut bytes = 0;
         let mut notice = None;
@@ -239,6 +245,11 @@ impl PagePlan {
 
             bytes += row_bytes;
             rows.push(raw_row);
+
+            if let Some(locator) = locator_position.and_then(|position| key.get(position)) {
+                row_locators.push(locator.clone());
+            }
+
             last_key = Some(key);
         }
 
@@ -258,10 +269,23 @@ impl PagePlan {
         Page {
             columns: columns.into_iter().take(data_columns).collect(),
             rows,
+            row_locators,
             next,
             mode: self.mode,
             notice,
         }
+    }
+
+    /// Where the row locator sits among the selected ordering keys, when it
+    /// is selected at all.
+    fn locator_key_position(&self) -> Option<usize> {
+        if self.mode != PagingMode::Keyset {
+            return None;
+        }
+
+        self.order
+            .iter()
+            .position(|term| term.column == ColumnRef::Locator)
     }
 
     fn token(&self, position: Position) -> ContinuationToken {
@@ -299,20 +323,7 @@ fn ordering(sort: &[SortKey], details: &ObjectDetails) -> (Vec<OrderTerm>, Pagin
         })
         .collect();
 
-    let tie_breaker: Option<Vec<ColumnRef>> = match details.unique_row_key() {
-        Some(key) => Some(
-            key.columns
-                .iter()
-                .map(|column| ColumnRef::Column(column.clone()))
-                .collect(),
-        ),
-        None => details
-            .row_locator
-            .as_ref()
-            .map(|_| vec![ColumnRef::Locator]),
-    };
-
-    let Some(tie_breaker) = tie_breaker else {
+    let Some(tie_breaker) = row_identity(details) else {
         return (order, PagingMode::Offset);
     };
 
@@ -469,6 +480,7 @@ mod tests {
             default: None,
             ordinal,
             decodable: true,
+            generated: false,
             comment: None,
         }
     }
@@ -561,6 +573,30 @@ mod tests {
                 .text
                 .contains("ORDER BY \"qwerio_object\".rowid ASC NULLS LAST")
         );
+    }
+
+    #[test]
+    fn pages_identified_by_the_locator_report_each_rows_locator() {
+        let mut sorted_request = request(details(None, true), 5);
+        sorted_request.sort = vec![SortKey::descending("c")];
+        let plan = PagePlan::new(&sorted_request).expect("plan");
+
+        // Data columns a, b, c, then the keys: c, then the locator.
+        let page = plan.build_page(
+            Vec::new(),
+            vec![row(&[1, 2, 9, 9, 40]), row(&[3, 4, 8, 8, 41])],
+        );
+
+        assert_eq!(page.rows, vec![row(&[1, 2, 9]), row(&[3, 4, 8])]);
+        assert_eq!(page.row_locators, row(&[40, 41]));
+    }
+
+    #[test]
+    fn pages_identified_by_a_key_report_no_locators() {
+        let plan = PagePlan::new(&request(details(Some(&["a"]), true), 5)).expect("plan");
+        let page = plan.build_page(Vec::new(), vec![row(&[1, 2, 3, 1])]);
+
+        assert!(page.row_locators.is_empty());
     }
 
     #[test]

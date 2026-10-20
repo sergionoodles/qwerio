@@ -2,8 +2,7 @@
 //! plain text. Saves are atomic and refuse to overwrite external changes;
 //! unsaved edits are kept as drafts in local state until saved or discarded.
 
-use std::sync::Arc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Editor, EditorState, InputEvent};
@@ -21,12 +20,13 @@ use gpui_kit::{
     InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div, px,
 };
+use qwerio_app::AppError;
 use qwerio_app::local_state::Draft;
 use qwerio_app::navigation::ViewState;
 use qwerio_core::resource::ObjectRef;
 use qwerio_workspace::WorkspaceError;
 use qwerio_workspace::document::{
-    DiskState, DocumentKind, Fingerprint, SaveExpectation, disk_state, read_document, save_document,
+    DiskState, DocumentKind, Fingerprint, SaveExpectation, disk_state,
 };
 use qwerio_workspace::explorer::{Location, ScratchId};
 use qwerio_workspace::manifest::{DocumentId, ExecutionBinding};
@@ -90,6 +90,7 @@ pub struct DocumentView {
     conflict: Option<Conflict>,
     is_previewing: bool,
     draft_task: Option<Task<()>>,
+    draft_error: Option<SharedString>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -179,6 +180,7 @@ impl DocumentView {
             conflict: None,
             is_previewing: false,
             draft_task: None,
+            draft_error: None,
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
@@ -243,29 +245,21 @@ impl DocumentView {
             return;
         };
 
-        let Some(path) = self.model.read(cx).document_path(document) else {
+        let Some(_path) = self.model.read(cx).document_path(document) else {
             self.load = LoadState::Failed("This document is no longer in the workspace.".into());
             return;
         };
 
         let model = self.model.read(cx);
-        let local_state = Arc::clone(&model.services().local_state);
-        let workspace = model.manifest().id;
+        let storage = model.storage();
 
         let read = cx.background_spawn(async move {
-            let loaded =
-                read_document(&path).map_err(|error| SharedString::from(error.to_string()))?;
-            let draft = if restore_draft {
-                local_state
-                    .drafts(workspace)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .find(|draft| draft.document == document)
-            } else {
-                None
-            };
-
-            Ok::<_, SharedString>((loaded, draft))
+            let storage = storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            storage
+                .load_document(document, restore_draft)
+                .map_err(|error| SharedString::from(error.to_string()))
         });
 
         cx.spawn_in(window, async move |this, cx| {
@@ -335,48 +329,58 @@ impl DocumentView {
         cx.notify();
     }
 
-    /// Keeps unsaved text in local state so it survives crashes and restarts.
-    fn schedule_draft(&mut self, cx: &mut Context<Self>) {
-        // Temporary queries are not kept across sessions.
+    /// Flushes a document draft without ever executing SQL or row changes.
+    pub fn persist_draft(&mut self, cx: &mut Context<Self>) -> Task<Result<(), SharedString>> {
+        self.draft_task = None;
         let Some(document) = self.saved_document() else {
-            return;
+            return Task::ready(Ok(()));
         };
-
+        if self.load != LoadState::Ready {
+            return Task::ready(Ok(()));
+        }
         let model = self.model.read(cx);
-        let local_state = Arc::clone(&model.services().local_state);
-        let workspace = model.manifest().id;
+        let storage = model.storage();
+        let text = self.editor.read(cx).value().to_string();
+        let base = self.fingerprint;
+        let is_dirty = self.is_dirty;
+        cx.background_spawn(async move {
+            let mut storage = storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let result = if is_dirty {
+                storage.save_draft(Draft {
+                    document,
+                    text,
+                    base,
+                })
+            } else {
+                storage.discard_draft(document)
+            };
+            result.map_err(|error| SharedString::from(error.to_string()))
+        })
+    }
 
+    fn schedule_draft(&mut self, cx: &mut Context<Self>) {
+        if self.saved_document().is_none() {
+            return;
+        }
         self.draft_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(DRAFT_DELAY).await;
-
-            let Ok((text, base, is_dirty)) = this.update(cx, |this, cx| {
-                (
-                    this.editor.read(cx).value().to_string(),
-                    this.fingerprint,
-                    this.is_dirty,
-                )
+            // The running task must stay alive until its write finishes.
+            let Ok(task) = this.update(cx, |this, cx| {
+                let running = this.draft_task.take();
+                let task = this.persist_draft(cx);
+                this.draft_task = running;
+                task
             }) else {
                 return;
             };
-
-            cx.background_spawn(async move {
-                // Drafts are a safety net; failing to store one must not
-                // interrupt editing.
-                let _ = if is_dirty {
-                    local_state.save_draft(
-                        workspace,
-                        &Draft {
-                            document,
-                            text,
-                            base,
-                        },
-                        SystemTime::now(),
-                    )
-                } else {
-                    local_state.discard_draft(workspace, document)
-                };
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                this.draft_error = result.err();
+                cx.notify();
             })
-            .await;
+            .ok();
         }));
     }
 
@@ -409,7 +413,7 @@ impl DocumentView {
             }
         };
 
-        let Some(path) = self.model.read(cx).document_path(document) else {
+        let Some(_path) = self.model.read(cx).document_path(document) else {
             return;
         };
 
@@ -419,18 +423,18 @@ impl DocumentView {
         });
         let text = self.editor.read(cx).value();
         let model = self.model.read(cx);
-        let local_state = Arc::clone(&model.services().local_state);
-        let workspace = model.manifest().id;
+        let storage = model.storage();
         let saved_text = text.clone();
 
         self.is_saving = true;
         cx.notify();
 
         let save = cx.background_spawn(async move {
-            let fingerprint = save_document(&path, &text, expectation)?;
-            // The draft is obsolete once the file holds the text.
-            let _ = local_state.discard_draft(workspace, document);
-            Ok::<_, WorkspaceError>(fingerprint)
+            let fingerprint = storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .save_document(document, &text, expectation)?;
+            Ok::<_, AppError>(fingerprint)
         });
 
         cx.spawn_in(window, async move |this, cx| {
@@ -440,19 +444,20 @@ impl DocumentView {
                 this.is_saving = false;
 
                 match result {
-                    Ok(fingerprint) => {
-                        this.fingerprint = Some(fingerprint);
+                    Ok(saved) => {
+                        this.fingerprint = Some(saved.fingerprint);
+                        this.draft_error = saved.draft_error.map(|error| error.to_string().into());
                         this.saved_text = saved_text;
                         this.is_dirty = this.editor.read(cx).value() != this.saved_text;
                         this.conflict = None;
                         this.draft_task = None;
                     }
-                    Err(WorkspaceError::Conflict {
+                    Err(AppError::Workspace(WorkspaceError::Conflict {
                         on_disk: Some(_), ..
-                    }) => this.conflict = Some(Conflict::ChangedOnDisk),
-                    Err(WorkspaceError::Conflict { on_disk: None, .. }) => {
-                        this.conflict = Some(Conflict::DeletedOnDisk)
-                    }
+                    })) => this.conflict = Some(Conflict::ChangedOnDisk),
+                    Err(AppError::Workspace(WorkspaceError::Conflict {
+                        on_disk: None, ..
+                    })) => this.conflict = Some(Conflict::DeletedOnDisk),
                     Err(error) => {
                         window.push_notification(
                             Notification::error(format!("Could not save: {error}")),
@@ -471,6 +476,9 @@ impl DocumentView {
 
     /// Called when the watcher reports a change to this document's file.
     pub fn file_changed(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.model.read(cx).is_file_workspace() {
+            return;
+        }
         let Some(document) = self.saved_document() else {
             return;
         };
@@ -515,15 +523,22 @@ impl DocumentView {
         self.conflict = None;
         self.is_dirty = false;
         let model = self.model.read(cx);
-        let local_state = Arc::clone(&model.services().local_state);
-        let workspace = model.manifest().id;
-
-        cx.background_spawn(async move {
-            let _ = local_state.discard_draft(workspace, document);
+        let storage = model.storage();
+        let discard = cx.background_spawn(async move {
+            storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .discard_draft(document)
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = discard.await;
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(()) => this.load(false, window, cx),
+                Err(error) => window.push_notification(Notification::error(error.to_string()), cx),
+            })
+            .ok();
         })
         .detach();
-
-        self.load(false, window, cx);
     }
 
     fn keep_draft(&mut self, cx: &mut Context<Self>) {
@@ -870,6 +885,15 @@ impl Render for DocumentView {
                 }
             }))
             .child(self.render_toolbar(cx))
+            .when_some(self.draft_error.clone(), |this, error| {
+                this.child(
+                    div()
+                        .px_3()
+                        .py_2()
+                        .text_color(cx.theme().danger)
+                        .child(format!("Workspace autosave failed: {error}")),
+                )
+            })
             .when_some(self.conflict.clone(), |this, conflict| {
                 this.child(self.render_conflict(&conflict, cx))
             })

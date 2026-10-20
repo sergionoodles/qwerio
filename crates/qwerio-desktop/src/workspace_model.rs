@@ -2,19 +2,24 @@
 //! metadata cache, and file watching. Filesystem and database work runs off
 //! the UI thread; results update this model, which notifies its views.
 
+mod files;
+
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use gpui_kit::{App, AppContext as _, Context, Entity, EventEmitter, SharedString, Task};
 use qwerio_app::schema::apply_schema_change;
 use qwerio_app::services::ResolvedConnection;
+use qwerio_app::table_edits::save_row_edits;
+use qwerio_app::workspace_store::WorkspaceStore;
 use qwerio_app::{AppError, AppServices};
 use qwerio_core::capabilities::DatabaseCapabilities;
 use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
 use qwerio_core::ddl::SchemaChange;
 use qwerio_core::driver::DatabaseSession;
+use qwerio_core::edit::{RowEditRequest, SavedRow};
 use qwerio_core::ids::ConnectionId;
 use qwerio_core::resource::{CatalogEntry, CatalogPath, ObjectRef};
 use qwerio_workspace::explorer::{ExplorerEntry, ExplorerInput, Location, list_entries};
@@ -54,6 +59,7 @@ pub enum ListingStatus {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceEvent {
     ManifestChanged,
+    SaveFailed(SharedString),
     DocumentChanged(DocumentId),
     DocumentRemoved(DocumentId),
     ConnectionChanged(ConnectionId),
@@ -61,9 +67,11 @@ pub enum WorkspaceEvent {
 
 pub struct WorkspaceModel {
     services: Arc<AppServices>,
-    workspace: Arc<Mutex<Workspace>>,
+    storage: Arc<Mutex<WorkspaceStore>>,
     manifest: Arc<Manifest>,
     root: PathBuf,
+    is_file_workspace: bool,
+    is_encrypted: bool,
     catalogs: HashMap<CatalogKey, CatalogLoad<Arc<[CatalogEntry]>>>,
     relationships: HashMap<CatalogKey, CatalogLoad<Arc<[ForeignKeyInfo]>>>,
     details: HashMap<ObjectRef, Arc<ObjectDetails>>,
@@ -78,7 +86,7 @@ impl EventEmitter<WorkspaceEvent> for WorkspaceModel {}
 
 /// Everything loaded off the UI thread when opening a workspace.
 struct Opened {
-    workspace: Workspace,
+    storage: WorkspaceStore,
     untracked: Vec<String>,
     missing: HashSet<DocumentId>,
     bound: HashSet<ConnectionId>,
@@ -102,39 +110,51 @@ pub fn error_text(error: &AppError) -> SharedString {
 }
 
 impl WorkspaceModel {
-    /// Opens (or, with `create_name`, creates) the workspace in `root`.
-    pub fn open(
+    pub fn open_with_password(
         root: PathBuf,
         create_name: Option<String>,
+        password: Option<qwerio_core::connection::Secret>,
         cx: &mut App,
     ) -> Task<Result<Entity<Self>, SharedString>> {
         let services = Services::app(cx);
         let background_services = Arc::clone(&services);
 
         let load = cx.background_spawn(async move {
-            let workspace = match create_name {
+            let mut workspace = match create_name {
+                Some(name)
+                    if root
+                        .extension()
+                        .is_some_and(|extension| extension == "qwerio") =>
+                {
+                    Workspace::create_file(&root, &name, password.as_ref())
+                }
                 Some(name) => Workspace::create(&root, &name),
+                None if root.is_file() => Workspace::open_file(&root, password.as_ref()),
                 None => Workspace::open(&root),
             }
             .map_err(|error| SharedString::from(error.to_string()))?;
 
-            let manifest = workspace.manifest().clone();
+            let definitions = background_services
+                .local_state
+                .setting::<Vec<String>>(crate::settings_dialog::labels::LABELS_SETTING)
+                .map_err(|error| error_text(&error))?
+                .unwrap_or_default();
+            for label in definitions {
+                if !workspace.manifest().labels.contains(&label) {
+                    workspace
+                        .define_label(&label)
+                        .map_err(|error| SharedString::from(error.to_string()))?;
+                }
+            }
             let untracked = workspace.untracked_documents().unwrap_or_default();
             let missing = missing_documents(&workspace);
-            let bound = background_services
-                .local_state
-                .bound_connections(manifest.id)
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-
-            background_services
-                .local_state
-                .record_recent_workspace(workspace.root(), &manifest.name, SystemTime::now())
+            let storage = WorkspaceStore::new(workspace, background_services);
+            let bound = storage
+                .bound_connections()
                 .map_err(|error| error_text(&error))?;
 
             Ok::<_, SharedString>(Opened {
-                workspace,
+                storage,
                 untracked,
                 missing,
                 bound,
@@ -145,11 +165,13 @@ impl WorkspaceModel {
             let opened = load.await?;
 
             Ok(cx.new(|cx| {
-                let root = opened.workspace.root().to_path_buf();
-                let manifest = Arc::new(opened.workspace.manifest().clone());
+                let root = opened.storage.workspace().root().to_path_buf();
+                let manifest = Arc::new(opened.storage.workspace().manifest().clone());
                 let mut model = Self {
                     services,
-                    workspace: Arc::new(Mutex::new(opened.workspace)),
+                    is_file_workspace: opened.storage.workspace().is_file_workspace(),
+                    is_encrypted: opened.storage.workspace().is_encrypted(),
+                    storage: Arc::new(Mutex::new(opened.storage)),
                     manifest,
                     root,
                     catalogs: HashMap::new(),
@@ -231,6 +253,31 @@ impl WorkspaceModel {
             unbound_connections: &unbound,
         });
 
+        let entries = entries
+            .into_iter()
+            .map(|mut entry| {
+                let target = match &entry.target {
+                    qwerio_workspace::explorer::EntryTarget::Open(location) => {
+                        qwerio_workspace::labels::LabelTarget::from_location(location)
+                    }
+                    _ => None,
+                };
+                if let Some(assignment) = target.and_then(|target| {
+                    self.manifest
+                        .label_assignments
+                        .iter()
+                        .find(|assignment| assignment.target == target)
+                }) {
+                    let labels = assignment.labels.join(", ");
+                    entry.detail =
+                        Some(entry.detail.map_or_else(
+                            || labels.clone(),
+                            |detail| format!("{detail} · {labels}"),
+                        ));
+                }
+                entry
+            })
+            .collect();
         (entries, status)
     }
 
@@ -369,12 +416,12 @@ impl WorkspaceModel {
         connection: ConnectionId,
         cx: &App,
     ) -> Task<Result<ResolvedConnection, SharedString>> {
-        let services = Arc::clone(&self.services);
-        let manifest = Arc::clone(&self.manifest);
-
+        let storage = Arc::clone(&self.storage);
         cx.background_spawn(async move {
-            services
-                .resolve_connection(&manifest, connection)
+            storage
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .resolve_connection(connection)
                 .map_err(|error| error_text(&error))
         })
     }
@@ -465,6 +512,24 @@ impl WorkspaceModel {
         })
     }
 
+    /// Saves staged row changes on their own writable session and returns the
+    /// touched rows in request order.
+    pub fn save_row_edits(
+        &self,
+        request: RowEditRequest,
+        cx: &App,
+    ) -> Task<Result<Vec<SavedRow>, SharedString>> {
+        let resolve = self.resolve(request.details.object.connection, cx);
+        let sessions = Arc::clone(&self.services.sessions);
+
+        cx.spawn(async move |_| {
+            let resolved = resolve.await?;
+            save_row_edits(&sessions, resolved, request)
+                .await
+                .map_err(|error| error_text(&AppError::Database(error)))
+        })
+    }
+
     fn reload_changed_schema(
         &mut self,
         connection: ConnectionId,
@@ -496,20 +561,31 @@ impl WorkspaceModel {
         T: Send + 'static,
         F: FnOnce(&mut Workspace) -> WorkspaceResult<T> + Send + 'static,
     {
-        let workspace = Arc::clone(&self.workspace);
+        let storage = Arc::clone(&self.storage);
 
         let work = cx.background_spawn(async move {
-            let mut workspace = workspace.lock().unwrap_or_else(PoisonError::into_inner);
-            let output =
-                operation(&mut workspace).map_err(|error| SharedString::from(error.to_string()))?;
+            let mut storage = storage.lock().unwrap_or_else(PoisonError::into_inner);
+            let output = storage
+                .update(operation)
+                .map_err(|error| SharedString::from(error.to_string()))?;
+            let workspace = storage.workspace();
             let manifest = workspace.manifest().clone();
             let untracked = workspace.untracked_documents().unwrap_or_default();
-            let missing = missing_documents(&workspace);
+            let missing = missing_documents(workspace);
             Ok::<_, SharedString>((output, manifest, untracked, missing))
         });
 
         cx.spawn(async move |this, cx| {
-            let (output, manifest, untracked, missing) = work.await?;
+            let (output, manifest, untracked, missing) = match work.await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    this.update(cx, |_, cx| {
+                        cx.emit(WorkspaceEvent::SaveFailed(error.clone()))
+                    })
+                    .ok();
+                    return Err(error);
+                }
+            };
 
             this.update(cx, |this, cx| {
                 this.apply_snapshot(manifest, untracked, missing, cx);
@@ -547,6 +623,9 @@ impl WorkspaceModel {
     }
 
     fn start_watching(&mut self, cx: &mut Context<Self>) {
+        if self.is_file_workspace {
+            return;
+        }
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         let watcher = WorkspaceWatcher::start(&self.root, move |change| {
             // The receiver only disappears when the window closes.
@@ -633,9 +712,10 @@ fn missing_documents(workspace: &Workspace) -> HashSet<DocumentId> {
         .documents
         .iter()
         .filter(|document| {
-            workspace
-                .document_path(document.id)
-                .map_or(true, |path| !path.is_file())
+            !workspace.is_file_workspace()
+                && workspace
+                    .document_path(document.id)
+                    .map_or(true, |path| !path.is_file())
         })
         .map(|document| document.id)
         .collect()

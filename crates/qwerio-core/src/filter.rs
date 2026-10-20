@@ -312,6 +312,7 @@ mod tests {
             default: None,
             ordinal,
             decodable: true,
+            generated: false,
             comment: None,
         };
 

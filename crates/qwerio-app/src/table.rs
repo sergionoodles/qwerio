@@ -5,12 +5,14 @@
 use std::sync::Arc;
 
 use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
+use qwerio_core::edit::SavedRow;
 use qwerio_core::error::{DatabaseError, DbResult};
 use qwerio_core::filter::{Filter, SortDirection, SortKey};
 use qwerio_core::paging::{ContinuationToken, Page, PageNotice, PageRequest, PagingMode};
 use qwerio_core::relationship::{RelationshipOutcome, follow_referenced, follow_referencing};
 use qwerio_core::resource::ObjectRef;
 use qwerio_core::result::{ColumnDescriptor, Row};
+use qwerio_core::sql::{ColumnRef, row_identity};
 use qwerio_core::value::Value;
 
 use crate::navigation::ViewState;
@@ -48,6 +50,9 @@ pub struct TableBrowserState {
     view: ViewState,
     columns: Vec<ColumnDescriptor>,
     rows: Vec<Row>,
+    /// Each row's hidden locator, parallel to `rows`, when rows are
+    /// identified by it; empty otherwise.
+    row_locators: Vec<Value>,
     /// Rows released from the front of `rows` to stay within the budget.
     released_rows: usize,
     next: Option<ContinuationToken>,
@@ -67,6 +72,7 @@ impl TableBrowserState {
             view,
             columns: Vec::new(),
             rows: Vec::new(),
+            row_locators: Vec::new(),
             released_rows: 0,
             next: None,
             mode: None,
@@ -206,6 +212,7 @@ impl TableBrowserState {
     fn restart(&mut self) -> PageFetch {
         self.tickets.invalidate();
         self.rows.clear();
+        self.row_locators.clear();
         self.released_rows = 0;
         self.next = None;
         self.notice = None;
@@ -269,6 +276,7 @@ impl TableBrowserState {
         }
 
         self.rows.extend(page.rows);
+        self.row_locators.extend(page.row_locators);
         self.next = page.next;
         self.mode = Some(page.mode);
         self.notice = page.notice;
@@ -282,6 +290,8 @@ impl TableBrowserState {
 
         if excess > 0 {
             self.rows.drain(..excess);
+            self.row_locators
+                .drain(..excess.min(self.row_locators.len()));
             self.released_rows += excess;
         }
     }
@@ -314,6 +324,74 @@ impl TableBrowserState {
                 .collect(),
             None => Some(row.clone()),
         }
+    }
+
+    /// The values that find a row in the database for updates: its unique
+    /// key, or its hidden locator. `None` when rows have no identity.
+    pub fn row_identity(&self, index: usize) -> Option<Vec<(ColumnRef, Value)>> {
+        let row = self.rows.get(index)?;
+        let details = self.details.as_ref()?;
+
+        row_identity(details)?
+            .into_iter()
+            .map(|column| {
+                let value = match &column {
+                    ColumnRef::Column(name) => row.get(self.column_index(name)?)?.clone(),
+                    ColumnRef::Locator => self.row_locators.get(index)?.clone(),
+                };
+
+                Some((column, value))
+            })
+            .collect()
+    }
+
+    /// The position of a column in rows.
+    pub fn column_index(&self, name: &str) -> Option<usize> {
+        self.columns.iter().position(|column| column.name == name)
+    }
+
+    /// Replaces the loaded row with this identity by its saved values. The
+    /// row stays put even when the change moves it out of the current sort or
+    /// filters, until the next refresh.
+    pub fn replace_row(&mut self, identity: &[(ColumnRef, Value)], row: Row) -> bool {
+        let Some(index) = self.row_index(identity) else {
+            return false;
+        };
+
+        self.rows[index] = row;
+        true
+    }
+
+    /// Removes the loaded row with this identity, after it was deleted.
+    pub fn remove_row(&mut self, identity: &[(ColumnRef, Value)]) -> bool {
+        let Some(index) = self.row_index(identity) else {
+            return false;
+        };
+
+        self.rows.remove(index);
+
+        if index < self.row_locators.len() {
+            self.row_locators.remove(index);
+        }
+
+        true
+    }
+
+    /// Shows newly inserted rows first, in the given order, until the next
+    /// refresh puts them where the sort and filters place them.
+    pub fn prepend_rows(&mut self, rows: Vec<SavedRow>) {
+        let (values, locators): (Vec<Row>, Vec<Option<Value>>) = rows
+            .into_iter()
+            .map(|row| (row.values, row.locator))
+            .unzip();
+
+        self.rows.splice(0..0, values);
+        self.row_locators
+            .splice(0..0, locators.into_iter().flatten());
+    }
+
+    fn row_index(&self, identity: &[(ColumnRef, Value)]) -> Option<usize> {
+        (0..self.rows.len()).find(|index| self.row_identity(*index).as_deref() == Some(identity))
     }
 
     /// Follows a declared foreign key from a row to the referenced row.
@@ -428,6 +506,7 @@ mod tests {
             ordinal,
             comment: None,
             decodable: true,
+            generated: false,
         };
 
         Arc::new(ObjectDetails {
@@ -506,6 +585,44 @@ mod tests {
         assert_eq!(state.rows().len(), 6);
         assert_eq!(state.released_rows(), 3);
         assert_eq!(state.rows()[0][0], Value::Integer(3));
+    }
+
+    #[test]
+    fn row_identities_use_locators_that_stay_aligned_after_release() {
+        let keyless = Arc::new(ObjectDetails {
+            primary_key: None,
+            row_locator: Some(qwerio_core::catalog::RowLocator {
+                expression: "rowid".to_owned(),
+                type_name: "integer".to_owned(),
+            }),
+            ..(*details()).clone()
+        });
+        let mut state =
+            TableBrowserState::new(keyless.object.clone(), ViewState::default()).with_limits(2, 2);
+        let mut fetch = Some(state.set_details(keyless));
+
+        // Rowids are id + 100; the page plan reads them from the key column.
+        for start in [0, 2] {
+            let current = fetch.take().expect("fetch");
+            let plan = qwerio_core::paging::PagePlan::new(&current.request).expect("plan");
+            let rows = (start..start + 3)
+                .map(|id| {
+                    vec![
+                        Value::Integer(id),
+                        Value::Integer(0),
+                        Value::Integer(id + 100),
+                    ]
+                })
+                .collect();
+            state.apply_page(current.ticket, Ok(plan.build_page(Vec::new(), rows)));
+            fetch = state.load_more();
+        }
+
+        assert_eq!(state.released_rows(), 2);
+        assert_eq!(
+            state.row_identity(0),
+            Some(vec![(ColumnRef::Locator, Value::Integer(102))])
+        );
     }
 
     #[test]

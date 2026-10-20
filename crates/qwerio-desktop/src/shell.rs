@@ -4,6 +4,7 @@
 
 mod schema_changes;
 mod toolbar;
+mod unsaved_edits;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -45,7 +46,7 @@ use crate::content::{ContentEvent, entry_icon};
 use crate::document_view::{DocumentSource, DocumentView};
 use crate::explorer_view::{ExplorerLayout, ExplorerView};
 use crate::table_view::TableView;
-use crate::workspace_model::{WorkspaceEvent, WorkspaceModel};
+use crate::workspace_model::{WorkspaceEvent, WorkspaceModel, error_text};
 
 /// Below this width the sidebar and inspector start hidden.
 const NARROW_WIDTH: f32 = 760.;
@@ -185,6 +186,9 @@ impl WorkspaceShell {
         };
 
         shell.sync_all(window, cx);
+        if let Some(content) = shell.focused_content() {
+            content.focus(window, cx);
+        }
         shell.restore_ui_state(window, cx);
         shell
     }
@@ -193,13 +197,13 @@ impl WorkspaceShell {
         format!("{} — Qwerio", self.model.read(cx).manifest().name).into()
     }
 
-    pub fn root(&self, cx: &App) -> PathBuf {
-        self.model.read(cx).root().clone()
+    pub fn model(&self) -> Entity<WorkspaceModel> {
+        self.model.clone()
     }
 
     /// Ends console sessions and saves UI state before the shell goes away.
     pub fn shut_down(&mut self, cx: &mut Context<Self>) {
-        self.save_ui_state_now(cx);
+        self.save_task = None;
 
         for document in self.documents.values().chain(self.scratches.values()) {
             document.update(cx, |document, cx| document.shut_down(cx));
@@ -219,16 +223,30 @@ impl WorkspaceShell {
     }
 
     fn restore_ui_state(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let model = self.model.read(cx);
-        let local_state = Arc::clone(&model.services().local_state);
-        let workspace = model.manifest().id;
+        let storage = self.model.read(cx).storage();
         let load = cx.background_spawn(async move {
-            local_state.ui_state::<UiState>(workspace).ok().flatten()
+            storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .ui_state::<UiState>()
         });
 
         cx.spawn_in(window, async move |this, cx| {
-            let Some(state) = load.await else {
-                return;
+            let state = match load.await {
+                Ok(Some(state)) => state,
+                Ok(None) => return,
+                Err(error) => {
+                    cx.update(|window, cx| {
+                        window.push_notification(
+                            Notification::error(format!(
+                                "Could not restore workspace state: {error}"
+                            )),
+                            cx,
+                        )
+                    })
+                    .ok();
+                    return;
+                }
             };
 
             this.update_in(cx, |this, window, cx| {
@@ -259,22 +277,41 @@ impl WorkspaceShell {
     fn schedule_ui_save(&mut self, cx: &mut Context<Self>) {
         self.save_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(UI_STATE_SAVE_DELAY).await;
-            this.update(cx, |this, cx| this.save_ui_state_now(cx)).ok();
+            this.update(cx, |this, cx| {
+                let running = this.save_task.take();
+                this.save_ui_state_now(cx);
+                this.save_task = running;
+            })
+            .ok();
         }));
     }
 
     fn save_ui_state_now(&mut self, cx: &mut Context<Self>) {
-        self.capture_all_views(cx);
-        let state = self.ui_state();
-        let model = self.model.read(cx);
-        let local_state = Arc::clone(&model.services().local_state);
-        let workspace = model.manifest().id;
-
-        cx.background_spawn(async move {
-            // Layout is a convenience; failing to save it loses nothing else.
-            let _ = local_state.save_ui_state(workspace, &state);
+        let save = self.persist_ui_state(cx);
+        let model = self.model.clone();
+        cx.spawn(async move |_, cx| {
+            if let Err(error) = save.await {
+                model.update(cx, |_, cx| cx.emit(WorkspaceEvent::SaveFailed(error)));
+            }
         })
         .detach();
+    }
+
+    pub(super) fn persist_ui_state(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<(), SharedString>> {
+        self.save_task = None;
+        self.capture_all_views(cx);
+        let state = self.ui_state();
+        let storage = self.model.read(cx).storage();
+        cx.background_spawn(async move {
+            storage
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .save_ui_state(&state)
+                .map_err(|error| error_text(&error))
+        })
     }
 
     // --- Tab content -----------------------------------------------------------
@@ -522,6 +559,26 @@ impl WorkspaceShell {
         cx: &mut Context<Self>,
     ) {
         let focused = self.tabs.focused_tab();
+        let replaces_content = !new_tab && location != self.focused_location();
+
+        if !replaces_content {
+            return self.navigate_now(location, view, new_tab, window, cx);
+        }
+
+        self.leave_tab(focused, window, cx, move |this, window, cx| {
+            this.navigate_now(location, view, new_tab, window, cx)
+        });
+    }
+
+    fn navigate_now(
+        &mut self,
+        location: Location,
+        view: ViewState,
+        new_tab: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focused = self.tabs.focused_tab();
         self.capture_view(focused, cx);
 
         if new_tab {
@@ -553,6 +610,11 @@ impl WorkspaceShell {
 
     fn go_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focused = self.tabs.focused_tab();
+        self.leave_tab(focused, window, cx, Self::go_back_now);
+    }
+
+    fn go_back_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.tabs.focused_tab();
         self.capture_view(focused, cx);
 
         if self.tabs.focused_history_mut().go_back().is_some() {
@@ -563,6 +625,11 @@ impl WorkspaceShell {
 
     fn go_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let focused = self.tabs.focused_tab();
+        self.leave_tab(focused, window, cx, Self::go_forward_now);
+    }
+
+    fn go_forward_now(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.tabs.focused_tab();
         self.capture_view(focused, cx);
 
         if self.tabs.focused_history_mut().go_forward().is_some() {
@@ -572,6 +639,18 @@ impl WorkspaceShell {
     }
 
     fn activate_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let focused = self.tabs.focused_tab();
+
+        if focused == id {
+            return self.activate_tab_now(id, window, cx);
+        }
+
+        self.leave_tab(focused, window, cx, move |this, window, cx| {
+            this.activate_tab_now(id, window, cx)
+        });
+    }
+
+    fn activate_tab_now(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         self.tabs.activate(id);
         self.after_navigation(window, cx);
     }
@@ -591,6 +670,12 @@ impl WorkspaceShell {
     }
 
     fn close_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        self.leave_tab(id, window, cx, move |this, window, cx| {
+            this.close_tab_now(id, window, cx)
+        });
+    }
+
+    fn close_tab_now(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let needs_confirmation = matches!(
             self.slots.get(&id).map(|slot| &slot.content),
             Some(TabContent::Document(document)) if document.read(cx).needs_confirmation_to_close(cx)
@@ -683,6 +768,10 @@ impl WorkspaceShell {
                 window.set_window_title(&self.title(cx));
             }
             WorkspaceEvent::ConnectionChanged(_) => {}
+            WorkspaceEvent::SaveFailed(error) => window.push_notification(
+                Notification::error(format!("Workspace autosave failed: {error}")),
+                cx,
+            ),
         }
 
         cx.notify();
@@ -1193,6 +1282,7 @@ impl WorkspaceShell {
             .justify_start()
             .selected(is_current)
             .icon(icon)
+            .accessibility_label(label.clone())
             .child(
                 h_flex()
                     .flex_1()
@@ -1286,7 +1376,7 @@ impl WorkspaceShell {
         let mut connection_places = Vec::with_capacity(connections.len());
 
         for (id, name, engine, detail) in connections {
-            connection_places.push(self.render_place(
+            let place = self.render_place(
                 format!("connection-{id}").into(),
                 entry_icon(
                     qwerio_workspace::explorer::EntryKind::Connection(engine),
@@ -1296,40 +1386,30 @@ impl WorkspaceShell {
                 detail,
                 Location::connection_root(id),
                 cx,
-            ));
+            );
+            let model = self.model.clone();
+            connection_places.push(
+                div()
+                    .id(SharedString::from(format!("connection-menu-{id}")))
+                    .child(place)
+                    .context_menu(move |menu, _, _| {
+                        let model = model.clone();
+                        menu.item(PopupMenuItem::new("Edit Connection…").on_click(
+                            move |_, window, cx| {
+                                connection_dialog::open(model.clone(), Some(id), window, cx);
+                            },
+                        ))
+                    })
+                    .into_any_element(),
+            );
         }
 
-        let shell_focus = self.focus_handle.clone();
-        let workspace_switcher = Button::new("switch-workspace")
-            .ghost()
-            .w_full()
-            .justify_start()
-            .tooltip("Switch Workspace")
-            .accessibility_label(SharedString::from(manifest.name.clone()))
-            .child(
-                h_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .font_semibold()
-                            .child(manifest.name.clone()),
-                    )
-                    .child(
-                        Icon::new(IconName::ChevronsUpDown)
-                            .small()
-                            .text_color(cx.theme().muted_foreground),
-                    ),
-            )
-            // The shell's node bubbles to the workbench, which owns switching,
-            // even when nothing inside the shell has focus.
-            .on_click(move |_, window, cx| {
-                shell_focus.dispatch_action(&SwitchWorkspace, window, cx)
-            });
+        let workspace_switcher = div()
+            .id("workspace-name")
+            .px_2()
+            .py_1()
+            .font_semibold()
+            .child(manifest.name.clone());
 
         let root_place = self.render_place(
             "place-root".into(),
@@ -1599,17 +1679,16 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Commit", Box::new(CommitTransaction)),
         ("Roll Back", Box::new(RollbackTransaction)),
         ("Markdown Preview", Box::new(TogglePreview)),
-        ("Theme: System", Box::new(UseSystemTheme)),
-        ("Theme: Light", Box::new(UseLightTheme)),
-        ("Theme: Dark", Box::new(UseDarkTheme)),
-        ("Theme: Omarchy Palette", Box::new(UseOmarchyTheme)),
         ("Bigger Text", Box::new(IncreaseFontSize)),
         ("Smaller Text", Box::new(DecreaseFontSize)),
         ("Actual Text Size", Box::new(ResetFontSize)),
         ("Open Workspace…", Box::new(OpenWorkspace)),
         ("New Workspace…", Box::new(NewWorkspace)),
-        ("Switch Workspace…", Box::new(SwitchWorkspace)),
+        ("Import Workspace…", Box::new(ImportWorkspace)),
+        ("Export Workspace…", Box::new(ExportWorkspace)),
         ("Close Workspace", Box::new(CloseWorkspace)),
+        ("Settings…", Box::new(OpenSettings)),
+        ("About Qwerio", Box::new(About)),
     ]
 }
 

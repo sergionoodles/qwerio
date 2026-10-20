@@ -1,9 +1,11 @@
 //! The root view of each window: the workspace shell, or the welcome screen
 //! until a first workspace exists. Reopens the last workspace on start and
-//! owns window-wide commands such as switching workspaces, theme selection,
-//! and text size.
+//! owns window-wide commands such as opening workspace files, settings, and
+//! text size.
 
-use std::path::{Path, PathBuf};
+mod files;
+
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -14,28 +16,27 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable, InteractiveElement as _,
-    IntoElement, ParentElement as _, PathPromptOptions, Render, SharedString, Styled as _,
-    Subscription, Task, Window, WindowBounds, WindowDecorations, WindowOptions, div, img, px, size,
+    IntoElement, ParentElement as _, Render, SharedString, Styled as _, Window, WindowBounds,
+    WindowDecorations, WindowOptions, div, img, px, size,
 };
 use qwerio_app::local_state::RecentWorkspace;
-use qwerio_workspace::Workspace;
 
+use crate::about_dialog;
 use crate::actions::*;
 use crate::assets::LOGO_PATH;
 use crate::platform::paths::APPLICATION_ID;
 use crate::services::Services;
+use crate::settings_dialog;
 use crate::shell::WorkspaceShell;
-use crate::theme::{self, Applied, ThemeSource};
+use crate::theme::controller::ThemeController;
 use crate::workspace_model::WorkspaceModel;
-use crate::workspace_switcher;
 
 const RECENT_LIMIT: u32 = 8;
 const DEFAULT_FONT_SIZE: f32 = 14.0;
 const MIN_FONT_SIZE: f32 = 10.0;
 const MAX_FONT_SIZE: f32 = 24.0;
 const FONT_SIZE_STEP: f32 = 1.0;
-const FONT_SIZE_SETTING: &str = "font_size";
-const OMARCHY_SETTLE_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+pub(crate) const FONT_SIZE_SETTING: &str = "font_size";
 
 pub fn open_window(workspace: Option<PathBuf>, cx: &mut App) {
     let bounds = Bounds::centered(None, size(px(1280.), px(800.)), cx);
@@ -67,9 +68,7 @@ pub struct Workbench {
     is_restoring: bool,
     is_opening: bool,
     error: Option<SharedString>,
-    theme_source: ThemeSource,
-    omarchy_watch: Option<(notify::RecommendedWatcher, Task<()>)>,
-    _appearance: Subscription,
+    theme: Entity<ThemeController>,
 }
 
 impl Workbench {
@@ -78,12 +77,6 @@ impl Workbench {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let appearance = cx.observe_window_appearance(window, |this, window, cx| {
-            if this.theme_source == ThemeSource::System {
-                this.apply_theme(ThemeSource::System, window, cx);
-            }
-        });
-
         let mut workbench = Self {
             focus_handle: cx.focus_handle(),
             shell: None,
@@ -91,12 +84,19 @@ impl Workbench {
             is_restoring: workspace.is_none(),
             is_opening: false,
             error: None,
-            theme_source: ThemeSource::System,
-            omarchy_watch: None,
-            _appearance: appearance,
+            theme: cx.new(|cx| ThemeController::new(window, cx)),
         };
 
-        workbench.load_preferences(window, cx);
+        let this = cx.entity().downgrade();
+        window.on_window_should_close(cx, move |window, cx| {
+            this.update(cx, |this, cx| {
+                this.guard_workspace(window, cx, |window, _| window.remove_window());
+            })
+            .ok();
+            false
+        });
+        window.focus(&workbench.focus_handle, cx);
+        workbench.load_font_size(window, cx);
 
         match workspace {
             Some(path) => {
@@ -109,29 +109,16 @@ impl Workbench {
         workbench
     }
 
-    fn load_preferences(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn load_font_size(&self, window: &mut Window, cx: &mut Context<Self>) {
         let local_state = Arc::clone(&Services::app(cx).local_state);
         let load = cx.background_spawn(async move {
-            let source: ThemeSource = local_state
-                .setting(theme::THEME_SOURCE_SETTING)
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-            let font_size: Option<f32> = local_state.setting(FONT_SIZE_SETTING).ok().flatten();
-            (source, font_size)
+            local_state.setting::<f32>(FONT_SIZE_SETTING).ok().flatten()
         });
 
-        cx.spawn_in(window, async move |this, cx| {
-            let (source, font_size) = load.await;
-
-            this.update_in(cx, |this, window, cx| {
-                if let Some(font_size) = font_size {
-                    set_font_size(font_size, cx);
-                }
-
-                this.apply_theme(source, window, cx);
-            })
-            .ok();
+        cx.spawn_in(window, async move |_, cx| {
+            if let Some(font_size) = load.await {
+                cx.update(|_, cx| set_font_size(font_size, cx)).ok();
+            }
         })
         .detach();
     }
@@ -151,7 +138,10 @@ impl Workbench {
 
                 match last {
                     Some(path) => this.open_path(path, None, window, cx),
-                    None => this.is_restoring = false,
+                    None => {
+                        this.is_restoring = false;
+                        this.initialize_default(window, cx);
+                    }
                 }
 
                 cx.notify();
@@ -176,100 +166,6 @@ impl Workbench {
         .detach();
     }
 
-    /// Applies a theme source, reading the Omarchy palette off the UI thread.
-    pub fn apply_theme(
-        &mut self,
-        source: ThemeSource,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        self.theme_source = source;
-
-        if source != ThemeSource::Omarchy {
-            theme::apply(source, None, window, cx);
-            self.save_theme_source(source, cx);
-            return;
-        }
-
-        let local_state = Arc::clone(&Services::app(cx).local_state);
-        let read = cx.background_spawn(async move {
-            let custom: Option<PathBuf> = local_state
-                .setting(theme::OMARCHY_DIRECTORY_SETTING)
-                .ok()
-                .flatten();
-            theme::read_omarchy_palette(custom)
-        });
-
-        cx.spawn_in(window, async move |this, cx| {
-            let palette = read.await;
-
-            this.update_in(cx, |this, window, cx| {
-                if let Applied::FellBack { reason } =
-                    theme::apply(source, Some(palette), window, cx)
-                {
-                    window.push_notification(
-                        Notification::warning(format!(
-                            "Omarchy palette unavailable, using the system appearance. {reason}"
-                        )),
-                        cx,
-                    );
-                }
-
-                this.save_theme_source(source, cx);
-                this.watch_omarchy(window, cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    /// Re-applies the Omarchy palette when the active theme changes.
-    fn watch_omarchy(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.omarchy_watch.is_some() {
-            return;
-        }
-
-        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel::<()>();
-        let watcher = theme::watch_omarchy(None, move || {
-            // The receiver lives as long as the watch; nothing to do if gone.
-            let _ = sender.send(());
-        });
-
-        let Ok(watcher) = watcher else {
-            return;
-        };
-
-        let task = cx.spawn_in(window, async move |this, cx| {
-            while receiver.recv().await.is_some() {
-                // Theme switches write many files; apply once they settle.
-                cx.background_executor().timer(OMARCHY_SETTLE_DELAY).await;
-                while receiver.try_recv().is_ok() {}
-
-                let applied = this.update_in(cx, |this, window, cx| {
-                    if this.theme_source == ThemeSource::Omarchy {
-                        this.apply_theme(ThemeSource::Omarchy, window, cx);
-                    }
-                });
-
-                if applied.is_err() {
-                    break;
-                }
-            }
-        });
-
-        self.omarchy_watch = Some((watcher, task));
-    }
-
-    fn save_theme_source(&self, source: ThemeSource, cx: &mut Context<Self>) {
-        let local_state = Arc::clone(&Services::app(cx).local_state);
-
-        cx.background_spawn(async move {
-            // Preferences are best-effort; the theme already applied.
-            let _ = local_state.set_setting(theme::THEME_SOURCE_SETTING, &source);
-        })
-        .detach();
-    }
-
     fn change_font_size(&mut self, delta: Option<f32>, cx: &mut Context<Self>) {
         let current = f32::from(cx.theme().font_size);
         let next = match delta {
@@ -286,85 +182,27 @@ impl Workbench {
         .detach();
     }
 
-    /// Lists recent workspaces in the switcher dialog.
-    fn switch_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let local_state = Arc::clone(&Services::app(cx).local_state);
-        let load = cx.background_spawn(async move { local_state.recent_workspaces(RECENT_LIMIT) });
-        let current = self.shell.as_ref().map(|shell| shell.read(cx).root(cx));
-
-        cx.spawn_in(window, async move |this, cx| {
-            let recent = load.await.unwrap_or_default();
-
-            this.update_in(cx, |this, window, cx| {
-                this.recent = recent.clone();
-                workspace_switcher::open(cx.entity().downgrade(), recent, current, window, cx);
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    pub(crate) fn prompt_and_open(
-        &mut self,
-        create: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let prompt = cx.prompt_for_paths(PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some(if create { "Create Workspace" } else { "Open" }.into()),
-        });
-
-        cx.spawn_in(window, async move |this, cx| {
-            let Ok(Ok(Some(paths))) = prompt.await else {
-                return;
-            };
-            let Some(path) = paths.into_iter().next() else {
-                return;
-            };
-
-            this.update_in(cx, |this, window, cx| {
-                if create || Workspace::is_workspace(&path) {
-                    let name = create.then(|| folder_name(&path));
-                    this.open_path(path, name, window, cx);
-                } else {
-                    this.confirm_create(path, window, cx);
-                }
-            })
-            .ok();
-        })
-        .detach();
-    }
-
-    fn confirm_create(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        let this = cx.entity().downgrade();
-        let name = folder_name(&path);
-        let title = format!("Make “{name}” a workspace?");
-
-        window.open_alert_dialog(cx, move |alert, _, _| {
-            let this = this.clone();
-            let path = path.clone();
-
-            alert
-                .title(title.clone())
-                .description("Qwerio adds a .qwerio folder with the workspace manifest. Existing files are not changed.")
-                .ok_text("Create Workspace")
-                .show_cancel(true)
-                .on_ok(move |_, window, cx| {
-                    let name = folder_name(&path);
-                    this.update(cx, |this, cx| this.open_path(path.clone(), Some(name), window, cx))
-                        .ok();
-                    true
-                })
-        });
-    }
-
     pub fn open_path(
         &mut self,
         path: PathBuf,
         create_name: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().downgrade();
+        self.guard_workspace(window, cx, move |window, cx| {
+            this.update(cx, |this, cx| {
+                this.prepare_open(path, create_name, window, cx)
+            })
+            .ok();
+        });
+    }
+
+    fn load_workspace(
+        &mut self,
+        path: PathBuf,
+        create_name: Option<String>,
+        password: Option<qwerio_core::connection::Secret>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -376,63 +214,81 @@ impl Workbench {
         self.error = None;
         cx.notify();
 
-        let open = WorkspaceModel::open(path, create_name, cx);
+        let open = WorkspaceModel::open_with_password(path, create_name, password, cx);
 
         cx.spawn_in(window, async move |this, cx| {
             let result = open.await;
 
             this.update_in(cx, |this, window, cx| {
-                this.is_opening = false;
-                this.is_restoring = false;
-
-                match result {
-                    Ok(model) => {
-                        if let Some(previous) = this.shell.take() {
-                            previous.update(cx, |shell, cx| shell.shut_down(cx));
-                        }
-
-                        let shell = cx.new(|cx| WorkspaceShell::new(model, window, cx));
-                        window.set_window_title(&shell.read(cx).title(cx));
-                        this.shell = Some(shell);
-                    }
-                    // The welcome screen shows errors; an open shell stays put.
-                    Err(error) if this.shell.is_some() => {
-                        window.push_notification(Notification::error(error), cx);
-                    }
-                    Err(error) => {
-                        this.error = Some(error);
-                        this.load_recent(cx);
-                    }
-                }
-
-                cx.notify();
+                this.complete_open(result, window, cx)
             })
             .ok();
         })
         .detach();
     }
 
-    fn close_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(shell) = self.shell.take() {
-            shell.update(cx, |shell, cx| shell.shut_down(cx));
+    fn complete_open(
+        &mut self,
+        result: Result<Entity<WorkspaceModel>, SharedString>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.is_opening = false;
+        self.is_restoring = false;
+        match result {
+            Ok(model) => {
+                let owner = cx.entity().downgrade();
+                self.guard_workspace(window, cx, move |window, cx| {
+                    owner
+                        .update(cx, |this, cx| this.install_workspace(model, window, cx))
+                        .ok();
+                });
+            }
+            Err(error) => self.report_error(error, window, cx),
         }
-
-        window.set_window_title("Qwerio");
-        self.load_recent(cx);
         cx.notify();
     }
 
-    fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let recent = self.recent.iter().map(|workspace| {
-            let path = workspace.path.clone();
+    fn install_workspace(
+        &mut self,
+        model: Entity<WorkspaceModel>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let recent = model.read(cx).record_recent(cx);
+        if let Some(previous) = self.shell.take() {
+            previous.update(cx, |shell, cx| shell.shut_down(cx));
+        }
+        let shell = cx.new(|cx| WorkspaceShell::new(model, window, cx));
+        window.set_window_title(&shell.read(cx).title(cx));
+        self.shell = Some(shell);
+        cx.spawn_in(window, async move |this, cx| {
+            if let Err(error) = recent.await {
+                this.update_in(cx, |this, window, cx| this.report_error(error, window, cx))
+                    .ok();
+            }
+        })
+        .detach();
+        cx.notify();
+    }
 
-            workspace_switcher::recent_workspace_button("recent", workspace, cx).on_click(
-                cx.listener(move |this, _, window, cx| {
-                    this.open_path(path.clone(), None, window, cx);
-                }),
-            )
+    fn close_workspace(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let this = cx.entity().downgrade();
+        self.guard_workspace(window, cx, move |window, cx| {
+            this.update(cx, |this, cx| {
+                if let Some(shell) = this.shell.take() {
+                    shell.update(cx, |shell, cx| shell.shut_down(cx));
+                }
+                window.set_window_title("Qwerio");
+                window.focus(&this.focus_handle, cx);
+                this.load_recent(cx);
+                cx.notify();
+            })
+            .ok();
         });
+    }
 
+    fn render_welcome(&self, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .items_center()
@@ -453,7 +309,7 @@ impl Workbench {
                                 div()
                                     .text_sm()
                                     .text_color(cx.theme().muted_foreground)
-                                    .child("Open a folder to browse databases beside your queries and notes."),
+                                    .child("Open a .qwerio workspace to browse databases, queries, and notes."),
                             ),
                     )
                     .child(
@@ -477,31 +333,13 @@ impl Workbench {
                     .when_some(self.error.clone(), |this, error| {
                         this.child(div().text_sm().text_color(cx.theme().danger).child(error))
                     })
-                    .when(!self.recent.is_empty(), |this| {
-                        this.child(
-                            v_flex()
-                                .gap_1()
-                                .child(
-                                    div()
-                                        .text_xs()
-                                        .text_color(cx.theme().muted_foreground)
-                                        .child("Recent"),
-                                )
-                                .children(recent),
-                        )
-                    }),
+
             )
     }
 }
 
 fn set_font_size(size: f32, cx: &mut App) {
     Theme::update(cx, |theme| theme.font_size = px(size));
-}
-
-fn folder_name(path: &Path) -> String {
-    path.file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "Workspace".to_owned())
 }
 
 impl Focusable for Workbench {
@@ -525,25 +363,24 @@ impl Render for Workbench {
             .on_action(cx.listener(|this, _: &NewWorkspace, window, cx| {
                 this.prompt_and_open(true, window, cx)
             }))
-            .on_action(cx.listener(|this, _: &SwitchWorkspace, window, cx| {
-                this.switch_workspace(window, cx)
+            .on_action(cx.listener(|this, _: &ImportWorkspace, window, cx| {
+                this.import_workspace(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &ExportWorkspace, window, cx| {
+                this.export_workspace(window, cx)
             }))
             .on_action(
                 cx.listener(|this, _: &CloseWorkspace, window, cx| {
                     this.close_workspace(window, cx)
                 }),
             )
-            .on_action(cx.listener(|this, _: &UseSystemTheme, window, cx| {
-                this.apply_theme(ThemeSource::System, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &UseLightTheme, window, cx| {
-                this.apply_theme(ThemeSource::Light, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &UseDarkTheme, window, cx| {
-                this.apply_theme(ThemeSource::Dark, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &UseOmarchyTheme, window, cx| {
-                this.apply_theme(ThemeSource::Omarchy, window, cx)
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
+                settings_dialog::open(
+                    this.theme.clone(),
+                    this.shell.as_ref().map(|shell| shell.read(cx).model()),
+                    window,
+                    cx,
+                )
             }))
             .on_action(cx.listener(|this, _: &IncreaseFontSize, _, cx| {
                 this.change_font_size(Some(FONT_SIZE_STEP), cx)
@@ -554,6 +391,10 @@ impl Render for Workbench {
             .on_action(
                 cx.listener(|this, _: &ResetFontSize, _, cx| this.change_font_size(None, cx)),
             )
+            .on_action(cx.listener(|this, _: &Quit, window, cx| {
+                this.guard_workspace(window, cx, |_, cx| cx.quit());
+            }))
+            .on_action(|_: &About, window, cx| about_dialog::open(window, cx))
             .map(|this| match &self.shell {
                 Some(shell) => this.child(shell.clone()),
                 None if self.is_restoring => this,

@@ -150,6 +150,14 @@ pub fn save_document(
     text: &str,
     expectation: SaveExpectation,
 ) -> WorkspaceResult<Fingerprint> {
+    save_bytes(path, text.as_bytes(), expectation)
+}
+
+pub(crate) fn save_bytes(
+    path: &Path,
+    bytes: &[u8],
+    expectation: SaveExpectation,
+) -> WorkspaceResult<Fingerprint> {
     check_expectation(path, expectation)?;
 
     let directory = path
@@ -158,8 +166,13 @@ pub fn save_document(
     fs::create_dir_all(directory).map_err(|error| WorkspaceError::io(directory, error))?;
 
     let temporary = temporary_path(path);
-    let result = write_and_sync(&temporary, text.as_bytes()).and_then(|()| {
-        fs::rename(&temporary, path).map_err(|error| WorkspaceError::io(path, error))
+    let result = write_and_sync(&temporary, bytes).and_then(|()| {
+        if matches!(expectation, SaveExpectation::New) {
+            fs::hard_link(&temporary, path).map_err(|error| WorkspaceError::io(path, error))?;
+            fs::remove_file(&temporary).map_err(|error| WorkspaceError::io(&temporary, error))
+        } else {
+            fs::rename(&temporary, path).map_err(|error| WorkspaceError::io(path, error))
+        }
     });
 
     if result.is_err() {
@@ -169,7 +182,7 @@ pub fn save_document(
 
     result?;
     sync_directory(directory);
-    Ok(Fingerprint::of(text.as_bytes()))
+    Ok(Fingerprint::of(bytes))
 }
 
 fn check_expectation(path: &Path, expectation: SaveExpectation) -> WorkspaceResult<()> {
@@ -204,9 +217,14 @@ fn temporary_path(path: &Path) -> PathBuf {
 }
 
 fn write_and_sync(path: &Path, bytes: &[u8]) -> WorkspaceResult<()> {
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    let mut file = options
         .open(path)
         .map_err(|error| WorkspaceError::io(path, error))?;
 

@@ -10,7 +10,8 @@ actions!(
     [
         OpenWorkspace,
         NewWorkspace,
-        SwitchWorkspace,
+        ImportWorkspace,
+        ExportWorkspace,
         CloseWorkspace,
         NewConnection,
         NewDatabase,
@@ -35,6 +36,10 @@ actions!(
         OpenCommandPalette,
         Refresh,
         Save,
+        EditCell,
+        AddRow,
+        DuplicateRow,
+        DeleteRow,
         RunStatement,
         CancelStatement,
         BeginTransaction,
@@ -44,13 +49,11 @@ actions!(
         AddToFavorites,
         ToggleExplorerLayout,
         ShowRelationshipGraph,
-        UseSystemTheme,
-        UseLightTheme,
-        UseDarkTheme,
-        UseOmarchyTheme,
         IncreaseFontSize,
         DecreaseFontSize,
         ResetFontSize,
+        OpenSettings,
+        About,
         Quit,
     ]
 );
@@ -61,9 +64,13 @@ pub const WORKBENCH_CONTEXT: &str = "Workbench";
 /// Key context of a SQL document.
 pub const SQL_DOCUMENT_CONTEXT: &str = "SqlDocument";
 
+/// Key context of gpui-component's data table, which has no Enter binding.
+pub const DATA_TABLE_CONTEXT: &str = "DataTable";
+
 pub fn bind_keys(cx: &mut App) {
     let workbench = Some(WORKBENCH_CONTEXT);
     let sql = Some(SQL_DOCUMENT_CONTEXT);
+    let data_table = Some(DATA_TABLE_CONTEXT);
 
     cx.bind_keys([
         KeyBinding::new("secondary-o", OpenWorkspace, workbench),
@@ -86,10 +93,16 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-=", IncreaseFontSize, workbench),
         KeyBinding::new("secondary--", DecreaseFontSize, workbench),
         KeyBinding::new("secondary-0", ResetFontSize, workbench),
+        KeyBinding::new("secondary-,", OpenSettings, workbench),
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-enter", RunStatement, sql),
         KeyBinding::new("secondary-.", CancelStatement, sql),
         KeyBinding::new("secondary-shift-v", TogglePreview, workbench),
+        KeyBinding::new("enter", EditCell, data_table),
+        KeyBinding::new("f2", EditCell, data_table),
+        KeyBinding::new("alt-insert", AddRow, data_table),
+        KeyBinding::new("secondary-d", DuplicateRow, data_table),
+        KeyBinding::new("delete", DeleteRow, data_table),
     ]);
 
     if cfg!(target_os = "macos") {
@@ -113,7 +126,12 @@ pub fn set_menus(cx: &mut App) {
     cx.set_menus(vec![
         Menu {
             name: "Qwerio".into(),
-            items: vec![MenuItem::action("Quit Qwerio", Quit)],
+            items: vec![
+                MenuItem::action("About Qwerio", About),
+                MenuItem::action("Settings…", OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Quit Qwerio", Quit),
+            ],
             disabled: false,
         },
         Menu {
@@ -121,7 +139,8 @@ pub fn set_menus(cx: &mut App) {
             items: vec![
                 MenuItem::action("New Workspace…", NewWorkspace),
                 MenuItem::action("Open Workspace…", OpenWorkspace),
-                MenuItem::action("Switch Workspace…", SwitchWorkspace),
+                MenuItem::action("Import Workspace…", ImportWorkspace),
+                MenuItem::action("Export Workspace…", ExportWorkspace),
                 MenuItem::separator(),
                 MenuItem::action("New Connection…", NewConnection),
                 MenuItem::action("New Database…", NewDatabase),
@@ -172,11 +191,6 @@ pub fn set_menus(cx: &mut App) {
                 MenuItem::action("Bigger Text", IncreaseFontSize),
                 MenuItem::action("Smaller Text", DecreaseFontSize),
                 MenuItem::action("Actual Size", ResetFontSize),
-                MenuItem::separator(),
-                MenuItem::action("System Appearance", UseSystemTheme),
-                MenuItem::action("Light", UseLightTheme),
-                MenuItem::action("Dark", UseDarkTheme),
-                MenuItem::action("Omarchy Palette", UseOmarchyTheme),
             ],
             disabled: false,
         },

@@ -5,16 +5,22 @@
 use gpui_kit::assets::IconName as LucideIcon;
 use gpui_kit::component::breadcrumb::{Breadcrumb, BreadcrumbItem};
 use gpui_kit::component::button::{Button, ButtonVariants as _};
+use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::toolbar::{Toolbar, ToolbarGroup};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName};
-use gpui_kit::{Context, IntoElement, ParentElement as _, Styled as _, Window, div};
+use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{
+    Context, FocusHandle, IntoElement, OwnedMenuItem, ParentElement as _, Styled as _, Window, div,
+};
 use qwerio_app::navigation::ViewState;
 use qwerio_core::resource::ObjectKind;
 use qwerio_workspace::document::DocumentKind;
 use qwerio_workspace::explorer::{EntryKind, breadcrumbs};
 
 use super::{TabContent, WorkspaceShell};
+use crate::about_dialog;
+use crate::actions::OpenSettings;
 use crate::connection_dialog;
 use crate::content::{document_icon, entry_icon, object_icon};
 use crate::explorer_view::ExplorerLayout;
@@ -34,6 +40,14 @@ impl WorkspaceShell {
 
         let navigation = ToolbarGroup::new("toolbar-navigation")
             .label("Navigation")
+            // macOS provides the native menu bar; other platforms need an in-window menu.
+            .when(!cfg!(target_os = "macos"), |navigation| {
+                navigation.content(render_application_menu(
+                    window
+                        .focused(cx)
+                        .unwrap_or_else(|| self.focus_handle.clone()),
+                ))
+            })
             .child(
                 Button::new("toggle-sidebar")
                     .ghost()
@@ -97,6 +111,8 @@ impl WorkspaceShell {
             .child(self.render_workspace_group(cx))
             .content(group_separator())
             .child(view)
+            .content(group_separator())
+            .child(render_app_group(self.focus_handle.clone()))
     }
 
     fn render_breadcrumb(&self, cx: &mut Context<Self>) -> Breadcrumb {
@@ -245,6 +261,85 @@ impl WorkspaceShell {
         })
         .collect()
     }
+}
+
+fn render_application_menu(action_focus: FocusHandle) -> impl IntoElement {
+    Button::new("application-menu")
+        .ghost()
+        .small()
+        .icon(IconName::Menu)
+        .tooltip("Application menu")
+        .accessibility_label("Application menu")
+        .dropdown_menu(move |menu, window, cx| {
+            let items = cx
+                .get_menus()
+                .unwrap_or_default()
+                .into_iter()
+                .map(OwnedMenuItem::Submenu);
+
+            items.fold(menu.action_context(action_focus.clone()), |menu, item| {
+                append_application_menu_item(menu, item, window, cx)
+            })
+        })
+}
+
+fn append_application_menu_item(
+    menu: PopupMenu,
+    item: OwnedMenuItem,
+    window: &mut Window,
+    cx: &mut Context<PopupMenu>,
+) -> PopupMenu {
+    match item {
+        OwnedMenuItem::Separator => menu.separator(),
+        OwnedMenuItem::Action {
+            name,
+            action,
+            checked,
+            disabled,
+            ..
+        } => menu.item(
+            PopupMenuItem::new(name)
+                .action(action)
+                .checked(checked)
+                .disabled(disabled),
+        ),
+        OwnedMenuItem::Submenu(submenu) if submenu.disabled => {
+            menu.item(PopupMenuItem::new(submenu.name).disabled(true))
+        }
+        OwnedMenuItem::Submenu(submenu) => {
+            menu.submenu(submenu.name, window, cx, move |menu, window, cx| {
+                submenu.items.iter().cloned().fold(menu, |menu, item| {
+                    append_application_menu_item(menu, item, window, cx)
+                })
+            })
+        }
+        // System-owned menus such as macOS Services have no in-window equivalent.
+        OwnedMenuItem::SystemMenu(_) => menu,
+    }
+}
+
+/// Set apart at the far end: about the app rather than the workspace.
+fn render_app_group(shell_focus: FocusHandle) -> ToolbarGroup {
+    ToolbarGroup::new("toolbar-app")
+        .label("Application")
+        .child(
+            Button::new("settings")
+                .ghost()
+                .icon(IconName::Settings)
+                .tooltip("Settings")
+                // The shell's node bubbles to the workbench, which owns the
+                // theme, even when nothing inside the shell has focus.
+                .on_click(move |_, window, cx| {
+                    shell_focus.dispatch_action(&OpenSettings, window, cx)
+                }),
+        )
+        .child(
+            Button::new("about")
+                .ghost()
+                .icon(IconName::Info)
+                .tooltip("About Qwerio")
+                .on_click(|_, window, cx| about_dialog::open(window, cx)),
+        )
 }
 
 fn group_separator() -> Separator {

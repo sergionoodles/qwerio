@@ -1,6 +1,7 @@
 //! Qwerio desktop entry point: composes services, registers the database
 //! adapters, and opens the first window.
 
+mod about_dialog;
 mod actions;
 mod assets;
 mod connection_dialog;
@@ -9,10 +10,12 @@ mod document_view;
 mod explorer_view;
 mod filter_panel;
 mod grid;
+mod label_dialog;
 mod platform;
 mod schema_dialog;
 mod schema_graph;
 mod services;
+mod settings_dialog;
 mod shell;
 mod sql_console;
 mod table_view;
@@ -21,6 +24,7 @@ mod theme;
 mod ui_tests;
 mod workbench;
 mod workspace_model;
+mod workspace_password;
 mod workspace_switcher;
 
 use std::path::PathBuf;
@@ -52,6 +56,13 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<(), String> {
+    let paths = AppPaths::discover().ok_or("no home directory was found")?;
+    let Some(_instance) = platform::instance::AppInstance::acquire(&paths.state_directory)
+        .map_err(|error| format!("application instance lock: {error}"))?
+    else {
+        eprintln!("Qwerio is already running.");
+        return Ok(());
+    };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(DATABASE_THREADS)
         .thread_name("qwerio-database")
@@ -59,7 +70,6 @@ fn run() -> Result<(), String> {
         .build()
         .map_err(|error| format!("database runtime: {error}"))?;
 
-    let paths = AppPaths::discover().ok_or("no home directory was found")?;
     std::fs::create_dir_all(&paths.state_directory)
         .map_err(|error| format!("{}: {error}", paths.state_directory.display()))?;
     let local_state =

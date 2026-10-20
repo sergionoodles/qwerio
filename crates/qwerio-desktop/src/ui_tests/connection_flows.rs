@@ -1,4 +1,4 @@
-//! Adding a connection through the connection dialog.
+//! Adding and editing connections through the connection dialog.
 
 use gpui_kit::TestAppContext;
 use gpui_kit::test::TestWindowExt as _;
@@ -10,6 +10,122 @@ use super::*;
 const NEW_CONNECTION_NAME: &str = "sqlite@shop.sqlite";
 /// The engine list starts on PostgreSQL; SQLite is next.
 const POSTGRES_TO_SQLITE_STEPS: usize = 1;
+
+fn open_sidebar_connection_settings(fixture: &Fixture, cx: &mut TestAppContext) -> AnyWindowHandle {
+    init_app(fixture.services.clone(), cx);
+    let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
+    let connection = Workspace::open(&fixture.root)
+        .expect("workspace")
+        .manifest()
+        .connections[0]
+        .id;
+    let sidebar_key = SharedString::from(format!("connection-{connection}"));
+    wait_until(
+        window,
+        cx,
+        "the sidebar connection is listed",
+        |window, _| window.try_find(sidebar_key.clone()).is_some(),
+    );
+    interact(window, cx, |window, cx| window.right_click(sidebar_key, cx));
+    wait_until(window, cx, "the connection menu opens", |window, _| {
+        window.try_find("popup-menu").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        let mut menu = window.within("popup-menu");
+        assert_eq!(menu.find(0_usize).label(), Some("Edit Connection…"));
+        menu.click(0_usize, cx);
+    });
+    let database = fixture.database.display().to_string();
+    wait_until(window, cx, "the saved settings load", |window, _| {
+        window
+            .try_find("connection-file")
+            .is_some_and(|field| field.value() == Some(database.as_str()))
+    });
+    interact(window, cx, |window, _| {
+        assert_eq!(
+            window.find("connection-name").value(),
+            Some(CONNECTION_NAME)
+        );
+        assert!(window.try_find("connection-engine").is_none());
+    });
+    window
+}
+
+#[gpui_kit::test]
+fn edits_a_connection_from_the_sidebar(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let window = open_sidebar_connection_settings(&fixture, cx);
+    let original = Workspace::open(&fixture.root).expect("workspace");
+    let connection = original.manifest().connections[0].id;
+    let replacement = fixture.database.with_file_name("replacement.sqlite");
+    seed_database(&replacement);
+    const EDITED_NAME: &str = "Updated shop";
+
+    interact(window, cx, |window, cx| {
+        window.click("connection-name", cx);
+        window.press("ctrl-a", cx);
+        window.input(EDITED_NAME, cx);
+        window.click("connection-file", cx);
+        window.press("ctrl-a", cx);
+        window.input(&replacement.display().to_string(), cx);
+        window.click("foreign-keys", cx);
+        window.click("save-connection", cx);
+    });
+    wait_until(window, cx, "the editor closes after saving", |window, _| {
+        window.try_find("connection-name").is_none()
+    });
+    wait_until(window, cx, "the connection name updates", |window, _| {
+        label_of(window, fixture.connection_key.clone()).as_deref() == Some(EDITED_NAME)
+    });
+
+    let workspace = Workspace::open(&fixture.root).expect("workspace");
+    assert_eq!(workspace.manifest().connections.len(), 1);
+    assert_eq!(workspace.manifest().connections[0].id, connection);
+    assert_eq!(workspace.manifest().connections[0].name, EDITED_NAME);
+    let resolved = fixture
+        .services
+        .resolve_connection(workspace.manifest(), connection)
+        .expect("saved connection");
+    let ConnectionOptions::Sqlite(options) = resolved.descriptor.options else {
+        panic!("the connection must stay SQLite");
+    };
+    assert_eq!(options.path, replacement);
+    assert!(!options.enforce_foreign_keys);
+}
+
+#[gpui_kit::test]
+fn validates_connection_edits_and_discards_them_on_cancel(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let window = open_sidebar_connection_settings(&fixture, cx);
+    interact(window, cx, |window, cx| {
+        window.click("connection-name", cx);
+        window.press("ctrl-a", cx);
+        window.press("backspace", cx);
+        window.click("save-connection", cx);
+    });
+    wait_until(window, cx, "an empty name is rejected", |window, _| {
+        label_of(window, "connection-status").as_deref() == Some("Enter a name for the connection")
+    });
+    interact(window, cx, |window, cx| {
+        window.click("connection-name", cx);
+        window.input("Discard this name", cx);
+        window.click("cancel-connection", cx);
+    });
+    wait_until(window, cx, "Cancel closes the editor", |window, _| {
+        window.try_find("connection-name").is_none()
+    });
+    let workspace = Workspace::open(&fixture.root).expect("workspace");
+    assert_eq!(workspace.manifest().connections.len(), 1);
+    assert_eq!(workspace.manifest().connections[0].name, CONNECTION_NAME);
+    let resolved = fixture
+        .services
+        .resolve_connection(workspace.manifest(), workspace.manifest().connections[0].id)
+        .expect("unchanged connection");
+    let ConnectionOptions::Sqlite(options) = resolved.descriptor.options else {
+        panic!("the connection must stay SQLite");
+    };
+    assert_eq!(options.path, fixture.database);
+}
 
 #[gpui_kit::test]
 fn adds_a_sqlite_connection_through_the_dialog(cx: &mut TestAppContext) {

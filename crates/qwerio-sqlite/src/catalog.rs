@@ -123,6 +123,12 @@ fn find_object_kind(connection: &Connection, name: &str) -> DbResult<ObjectKind>
         })
 }
 
+/// `pragma_table_xinfo.hidden` of a hidden virtual-table column.
+const HIDDEN_VIRTUAL_TABLE_COLUMN: i64 = 1;
+
+/// `pragma_table_xinfo.hidden` of virtual and stored generated columns.
+const GENERATED_COLUMNS: [i64; 2] = [2, 3];
+
 /// Columns in declaration order and the primary key position of each key column.
 struct ColumnListing {
     columns: Vec<ColumnInfo>,
@@ -145,7 +151,7 @@ fn columns(connection: &Connection, name: &str, kind: ObjectKind) -> DbResult<Co
         let hidden: i64 = row.get(5).map_err(map_error)?;
 
         // Hidden virtual-table columns are not selectable data.
-        if hidden == 1 {
+        if hidden == HIDDEN_VIRTUAL_TABLE_COLUMN {
             continue;
         }
 
@@ -171,6 +177,7 @@ fn columns(connection: &Connection, name: &str, kind: ObjectKind) -> DbResult<Co
             ordinal: columns.len() + 1,
             comment: None,
             decodable: true,
+            generated: GENERATED_COLUMNS.contains(&hidden),
         });
     }
 

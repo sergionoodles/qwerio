@@ -22,6 +22,9 @@ pub struct ColumnInfo {
     /// browse queries read the engine's text form and cells become
     /// `Value::Unsupported` carrying that text.
     pub decodable: bool,
+    /// Computed by the database (generated columns and identity columns that
+    /// are always generated); inserts and updates must not set it.
+    pub generated: bool,
 }
 
 /// An ordered set of columns, such as a primary key.

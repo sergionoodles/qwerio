@@ -34,7 +34,7 @@ fn check_entry_context_menus(is_icons: bool, cx: &mut TestAppContext) {
     }
 
     for (key, command) in [
-        (fixture.connection_key.clone(), "Connection Settings…"),
+        (fixture.connection_key.clone(), "Edit Connection…"),
         (fixture.note_key.clone(), "Rename…"),
     ] {
         interact(window, cx, |window, cx| window.right_click(key, cx));
@@ -44,7 +44,8 @@ fn check_entry_context_menus(is_icons: bool, cx: &mut TestAppContext) {
         interact(window, cx, |window, cx| {
             let menu = window.within("popup-menu");
             assert_eq!(menu.find(0_usize).label(), Some("Open"));
-            assert_eq!(menu.find(3_usize).label(), Some(command));
+            assert_eq!(menu.find(2_usize).label(), Some("Labels…"));
+            assert_eq!(menu.find(4_usize).label(), Some(command));
             window.press("escape", cx);
         });
         wait_until(window, cx, "Escape dismisses the menu", |window, _| {

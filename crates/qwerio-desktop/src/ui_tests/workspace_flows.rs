@@ -3,8 +3,6 @@
 use gpui_kit::TestAppContext;
 use gpui_kit::test::TestWindowExt as _;
 
-use std::time::SystemTime;
-
 use qwerio_workspace::Workspace;
 use tempfile::TempDir;
 
@@ -51,50 +49,27 @@ fn shows_the_welcome_screen_before_the_first_workspace(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
-fn switches_to_a_recent_workspace_from_the_sidebar(cx: &mut TestAppContext) {
+fn opens_another_workspace_without_a_selector(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
-    let other_directory = TempDir::new().expect("temporary directory");
-    let other_root = other_directory.path().to_path_buf();
-    Workspace::create(&other_root, "Other").expect("other workspace");
-    fixture
-        .services
-        .local_state
-        .record_recent_workspace(&other_root, "Other", SystemTime::UNIX_EPOCH)
-        .expect("recent workspace");
+    let directory = TempDir::new().expect("directory");
+    let path = directory.path().join("Other.qwerio");
+    Workspace::create_file(&path, "Other", None).expect("workspace");
     init_app(fixture.services.clone(), cx);
-
-    let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
-    wait_until(window, cx, "the workspace opens", |window, _| {
-        label_of(window, "switch-workspace").as_deref() == Some("Shop")
+    let (window, workbench) = open_workbench(Some(fixture.root.clone()), cx);
+    wait_until(window, cx, "first workspace", |window, _| {
+        window.try_find(fixture.connection_key.clone()).is_some()
     });
-
     interact(window, cx, |window, cx| {
-        window.click("switch-workspace", cx)
+        workbench.update(cx, |workbench, cx| {
+            workbench.open_path(path.clone(), None, window, cx)
+        })
     });
-    let current = SharedString::from(format!("switch-{}", fixture.root.display()));
-    let other = SharedString::from(format!("switch-{}", other_root.display()));
-    wait_until(
-        window,
-        cx,
-        "the switcher lists both workspaces",
-        |window, _| {
-            window.try_find(current.clone()).is_some() && window.try_find(other.clone()).is_some()
-        },
-    );
-    interact(window, cx, |window, _| {
-        assert!(window.try_find("switch-new-workspace").is_some());
-        assert!(window.try_find("switch-open-folder").is_some());
-    });
-
-    interact(window, cx, |window, cx| window.click(other.clone(), cx));
-
-    let connection = fixture.connection_key.clone();
-    wait_until(window, cx, "the other workspace opens", |window, _| {
-        label_of(window, "switch-workspace").as_deref() == Some("Other")
+    wait_until(window, cx, "other workspace", |window, _| {
+        label_of(window, "place-root").as_deref() == Some("Other")
     });
     interact(window, cx, |window, _| {
-        assert!(window.try_find(connection.clone()).is_none());
-        assert!(window.try_find(other.clone()).is_none());
+        assert!(window.try_find("switch-workspace").is_none());
+        assert!(window.try_find(fixture.connection_key.clone()).is_none());
     });
 }
 
@@ -183,5 +158,87 @@ fn navigates_back_and_forward_and_splits_the_view(cx: &mut TestAppContext) {
     interact(window, cx, |window, cx| window.click("close-split", cx));
     wait_until(window, cx, "the split closes", |window, _| {
         window.try_find("close-split").is_none()
+    });
+}
+
+#[gpui_kit::test]
+fn first_run_creates_a_plain_default_after_the_users_choice(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let path = fixture
+        .services
+        .local_state
+        .setting::<std::path::PathBuf>("default_workspace_path")
+        .expect("setting")
+        .expect("path");
+    init_app(fixture.services.clone(), cx);
+    let (window, _) = open_workbench(None, cx);
+    wait_until(window, cx, "first-run password choice", |window, _| {
+        window.try_find("workspace-without-password").is_some()
+    });
+    assert!(
+        !path.exists(),
+        "do not write plaintext before the encryption choice"
+    );
+    interact(window, cx, |window, cx| {
+        window.click("workspace-without-password", cx)
+    });
+    wait_until(window, cx, "default workspace", |window, _| {
+        label_of(window, "place-root").as_deref() == Some("Default")
+    });
+    assert!(
+        !Workspace::open_file(&path, None)
+            .expect("default file")
+            .is_encrypted()
+    );
+}
+
+#[gpui_kit::test]
+fn first_run_can_encrypt_the_default_and_unlock_it_on_reopen(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let path = fixture
+        .services
+        .local_state
+        .setting::<std::path::PathBuf>("default_workspace_path")
+        .expect("setting")
+        .expect("path");
+    init_app(fixture.services.clone(), cx);
+    let (window, workbench) = open_workbench(None, cx);
+    wait_until(window, cx, "first-run choice", |window, _| {
+        window.try_find("workspace-password").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        window.click("workspace-password", cx);
+        window.input("workspace secret", cx);
+        window.click("workspace-password-confirm", cx);
+        window.input("workspace secret", cx);
+        window.click("workspace-password-accept", cx);
+    });
+    wait_until(window, cx, "encrypted default", |window, _| {
+        label_of(window, "place-root").as_deref() == Some("Default")
+    });
+    assert!(Workspace::open_file(&path, None).is_err());
+    interact(window, cx, |window, cx| {
+        window.dispatch_action(Box::new(crate::actions::CloseWorkspace), cx)
+    });
+    wait_until(window, cx, "workspace closed", |window, _| {
+        window.try_find("open-workspace").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        workbench.update(cx, |workbench, cx| {
+            workbench.open_path(path.clone(), None, window, cx)
+        })
+    });
+    wait_until(window, cx, "unlock", |window, _| {
+        window.try_find("workspace-password").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        assert!(window.try_find("workspace-without-password").is_none());
+        window.click("workspace-password", cx);
+        window.input("workspace secret", cx);
+        window.click("workspace-password-accept", cx);
+    });
+    wait_until(window, cx, "unlocked", |window, _| {
+        window.try_find("workspace-password").is_none()
+            && label_of(window, "place-root").as_deref() == Some("Default")
     });
 }

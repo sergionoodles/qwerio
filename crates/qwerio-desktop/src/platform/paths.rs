@@ -12,6 +12,7 @@ const STATE_DATABASE: &str = "state.sqlite";
 pub struct AppPaths {
     /// Machine-local state (history, bindings, drafts).
     pub state_directory: PathBuf,
+    pub data_directory: PathBuf,
 }
 
 impl AppPaths {
@@ -22,7 +23,10 @@ impl AppPaths {
             .unwrap_or_else(|| directories.data_local_dir())
             .to_path_buf();
 
-        Some(Self { state_directory })
+        Some(Self {
+            state_directory,
+            data_directory: directories.data_local_dir().to_path_buf(),
+        })
     }
 
     pub fn state_database(&self) -> PathBuf {

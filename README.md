@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="resources/logo_512.png" alt="Qwerio logo" width="112">
+  <img src="resources/favicon.png" alt="Qwerio logo" width="112">
 </p>
 
 # Qwerio

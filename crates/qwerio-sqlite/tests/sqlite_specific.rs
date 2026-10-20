@@ -9,9 +9,12 @@ use qwerio_core::connection::{
 };
 use qwerio_core::contract::{close, failure, final_transaction_state, rows, run};
 use qwerio_core::driver::{DatabaseDriver, DatabaseSession, OpenSessionRequest};
+use qwerio_core::edit::{RowChange, RowEditRequest, RowUpdate, SavedRow};
 use qwerio_core::error::ErrorKind;
 use qwerio_core::ids::ConnectionId;
+use qwerio_core::paging::PageRequest;
 use qwerio_core::session::{AccessMode, ReadOnlyEnforcement, SessionPurpose, TransactionState};
+use qwerio_core::sql::ColumnRef;
 use qwerio_core::value::Value;
 use qwerio_sqlite::{SqliteDriver, create_database_file};
 use tempfile::TempDir;
@@ -240,5 +243,115 @@ async fn rowid_tables_without_keys_page_by_rowid() {
         details.row_locator.map(|locator| locator.expression),
         Some("rowid".to_owned())
     );
+    close(session.as_ref()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn rows_without_keys_are_edited_by_their_rowid() {
+    let directory = TempDir::new().expect("temporary directory");
+    let path = new_database(&directory);
+    let session = open(&path, AccessMode::ReadWrite).await;
+    run(
+        session.as_ref(),
+        "CREATE TABLE plain (name TEXT, done BOOLEAN, due DATE)",
+    )
+    .await;
+    run(
+        session.as_ref(),
+        "INSERT INTO plain VALUES ('same', 0, NULL), ('same', 0, NULL)",
+    )
+    .await;
+
+    let object = qwerio_core::resource::ObjectRef {
+        connection: session.info().connection,
+        database: None,
+        namespace: None,
+        kind: qwerio_core::resource::ObjectKind::Table,
+        name: "plain".to_owned(),
+    };
+    let details = Arc::new(session.describe(&object).await.expect("describe"));
+    let page = session
+        .fetch_page(PageRequest::first(Arc::clone(&details)))
+        .await
+        .expect("fetch page");
+    let second_locator = page.row_locators[1].clone();
+
+    let saved = session
+        .apply_row_edits(RowEditRequest {
+            details,
+            changes: vec![
+                RowChange::Update(RowUpdate {
+                    identity: vec![(ColumnRef::Locator, second_locator.clone())],
+                    changes: vec![
+                        ("done".to_owned(), Value::Bool(true)),
+                        ("due".to_owned(), Value::Text("2024-05-01".to_owned())),
+                    ],
+                }),
+                RowChange::Insert {
+                    values: vec![("name".to_owned(), Value::Text("new".to_owned()))],
+                },
+            ],
+        })
+        .await
+        .expect("update by rowid");
+
+    // Duplicate rows are told apart; booleans are stored as integers; new
+    // rows report their rowid so they can be edited further.
+    assert_eq!(
+        saved,
+        vec![
+            SavedRow {
+                values: vec![
+                    Value::Text("same".to_owned()),
+                    Value::Integer(1),
+                    Value::Text("2024-05-01".to_owned()),
+                ],
+                locator: Some(second_locator),
+            },
+            SavedRow {
+                values: vec![Value::Text("new".to_owned()), Value::Null, Value::Null],
+                locator: Some(Value::Integer(3)),
+            },
+        ]
+    );
+    assert_eq!(
+        rows(&run(session.as_ref(), "SELECT done FROM plain ORDER BY rowid").await),
+        vec![
+            vec![Value::Integer(0)],
+            vec![Value::Integer(1)],
+            vec![Value::Null]
+        ]
+    );
+    close(session.as_ref()).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn generated_columns_are_reported() {
+    let directory = TempDir::new().expect("temporary directory");
+    let path = new_database(&directory);
+    let session = open(&path, AccessMode::ReadWrite).await;
+    run(
+        session.as_ref(),
+        "CREATE TABLE prices (id INTEGER PRIMARY KEY, net REAL, \
+         gross REAL GENERATED ALWAYS AS (net * 1.2) VIRTUAL, \
+         doubled REAL GENERATED ALWAYS AS (net * 2) STORED)",
+    )
+    .await;
+
+    let object = qwerio_core::resource::ObjectRef {
+        connection: session.info().connection,
+        database: None,
+        namespace: None,
+        kind: qwerio_core::resource::ObjectKind::Table,
+        name: "prices".to_owned(),
+    };
+    let details = session.describe(&object).await.expect("describe");
+    let generated: Vec<bool> = details
+        .columns
+        .iter()
+        .map(|column| column.generated)
+        .collect();
+
+    assert_eq!(generated, vec![false, false, true, true]);
     close(session.as_ref()).await;
 }

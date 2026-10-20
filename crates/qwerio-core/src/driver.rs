@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use crate::capabilities::DatabaseCapabilities;
 use crate::catalog::{ForeignKeyInfo, ObjectDetails};
 use crate::connection::{ConnectionDescriptor, ConnectionOptions, Credentials, EngineKind};
+use crate::edit::{RowEditRequest, SavedRow};
 use crate::error::DbResult;
 use crate::ids::RequestId;
 use crate::paging::{Page, PageRequest};
@@ -91,11 +92,21 @@ pub trait TableBrowser: Send + Sync {
     async fn fetch_page(&self, request: PageRequest) -> DbResult<Page>;
 }
 
+/// Row edits from the table browser on a writable session.
+#[async_trait]
+pub trait TableEditor: Send + Sync {
+    /// Applies every change in one transaction, in order, and returns each
+    /// touched row in request order: inserted and updated rows as stored,
+    /// deleted rows as they were. Each change must touch exactly one row;
+    /// otherwise nothing is saved. Fails while a transaction is open.
+    async fn apply_row_edits(&self, request: RowEditRequest) -> DbResult<Vec<SavedRow>>;
+}
+
 /// One open session. Console sessions retain one physical connection so that
 /// BEGIN, later statements, and COMMIT/ROLLBACK share it; a session never
 /// reconnects silently.
 #[async_trait]
-pub trait DatabaseSession: DatabaseCatalog + TableBrowser {
+pub trait DatabaseSession: DatabaseCatalog + TableBrowser + TableEditor {
     fn info(&self) -> &SessionInfo;
 
     /// Starts one statement and returns its ordered event stream. Fails

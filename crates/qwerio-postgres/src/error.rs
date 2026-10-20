@@ -6,6 +6,8 @@ use qwerio_core::error::{DatabaseError, ErrorKind, redact_credentials};
 use tokio_postgres::error::{ErrorPosition, SqlState};
 
 const MULTIPLE_COMMANDS_MESSAGE: &str = "cannot insert multiple commands into a prepared statement";
+const TLS_HANDSHAKE_MESSAGE: &str = "error performing TLS handshake";
+const TLS_UNSUPPORTED_MESSAGE: &str = "server does not support TLS";
 
 /// Maps an error; `sql` converts server-reported character positions into
 /// byte offsets of the submitted text.
@@ -47,6 +49,16 @@ pub(crate) fn map_error(error: tokio_postgres::Error, sql: Option<&str>) -> Data
         return DatabaseError::new(
             ErrorKind::Connection,
             "The connection to the server was lost",
+        );
+    }
+
+    if error
+        .source()
+        .is_some_and(|cause| cause.to_string() == TLS_UNSUPPORTED_MESSAGE)
+    {
+        return DatabaseError::new(
+            ErrorKind::Tls,
+            "The server does not support TLS. To connect without encryption, set Encryption to \"No encryption\".",
         );
     }
 
@@ -113,6 +125,12 @@ fn describe_chain(error: &tokio_postgres::Error) -> String {
 }
 
 fn is_tls_error(error: &tokio_postgres::Error) -> bool {
+    // tokio-postgres exposes no TLS-kind accessor, and negotiation failures
+    // (such as a server rejecting TLS) need not contain a rustls error.
+    if error.to_string() == TLS_HANDSHAKE_MESSAGE {
+        return true;
+    }
+
     let mut source = error.source();
 
     while let Some(cause) = source {

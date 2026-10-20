@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 publish.workspace = true
 
 [[bin]]
@@ -12,6 +13,7 @@ name = "qwerio"
 path = "src/main.rs"
 
 [dependencies]
+chrono = { version = "0.4", default-features = false }
 directories = "6.0"
 gpui-kit = { workspace = true, features = ["tree-sitter-sql", "tree-sitter-markdown"] }
 keyring = "4.2"

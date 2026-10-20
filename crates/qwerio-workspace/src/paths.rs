@@ -40,7 +40,7 @@ pub fn relative_to(root: &Path, path: &Path) -> WorkspaceResult<PathBuf> {
         .map_err(|_| WorkspaceError::OutsideWorkspace(path.to_path_buf()))
 }
 
-fn is_plain_relative(path: &Path) -> bool {
+pub(crate) fn is_plain_relative(path: &Path) -> bool {
     !path.as_os_str().is_empty()
         && path
             .components()

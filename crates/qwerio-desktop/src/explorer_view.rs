@@ -332,6 +332,22 @@ impl ExplorerView {
             })
             .item(open_in_new_tab);
 
+        let label_target = match &open_target {
+            EntryTarget::Open(location) => {
+                qwerio_workspace::labels::LabelTarget::from_location(location)
+            }
+            EntryTarget::Untracked(_) => None,
+        };
+        let menu = if let Some(target) = label_target {
+            let labels_model = model.clone();
+            menu.item(
+                PopupMenuItem::new("Labels…").on_click(move |_, window, cx| {
+                    crate::label_dialog::open(labels_model.clone(), target.clone(), window, cx);
+                }),
+            )
+        } else {
+            menu
+        };
         let menu = match (&entry.kind, &open_target) {
             (EntryKind::Object(_), EntryTarget::Open(Location::Object(object))) => menu
                 .separator()
@@ -353,19 +369,21 @@ impl ExplorerView {
                 EntryKind::Connection(_),
                 EntryTarget::Open(Location::Container { connection, .. }),
             ) => menu.separator().item(item(
-                "Connection Settings…",
+                "Edit Connection…",
                 ContentEvent::SetUpConnection(*connection),
             )),
             (EntryKind::Document(_), EntryTarget::Open(Location::Document(document))) => menu
                 .separator()
                 .item(item("Rename…", ContentEvent::RenameDocument(*document)))
-                .item(item(
-                    "Remove from Workspace",
-                    ContentEvent::RemoveDocument {
-                        document: *document,
-                        delete_file: false,
-                    },
-                ))
+                .when(!model.read(cx).is_file_workspace(), |menu| {
+                    menu.item(item(
+                        "Remove from Workspace",
+                        ContentEvent::RemoveDocument {
+                            document: *document,
+                            delete_file: false,
+                        },
+                    ))
+                })
                 .item(item(
                     "Delete File",
                     ContentEvent::RemoveDocument {

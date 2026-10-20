@@ -14,8 +14,11 @@ pub mod schema;
 pub mod services;
 pub mod sessions;
 pub mod table;
+pub mod table_edit_session;
+pub mod table_edits;
 pub mod tabs;
 pub mod templates;
+pub mod workspace_store;
 
 pub use error::{AppError, AppResult};
 pub use services::AppServices;

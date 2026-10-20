@@ -7,12 +7,14 @@
 
 pub mod capabilities;
 pub mod catalog;
+pub mod cell_input;
 pub mod connection;
 #[cfg(feature = "contract-tests")]
 pub mod contract;
 pub mod ddl;
 pub mod display;
 pub mod driver;
+pub mod edit;
 pub mod error;
 pub mod export;
 pub mod filter;

@@ -486,7 +486,10 @@ impl SqlConsole {
                 cx.emit(ConsoleEvent::SelectRange(start..start + 1));
             }
 
-            if let Some(history) = completion.history {
+            if let Some(history) = completion
+                .history
+                .filter(|_| !self.model.read(cx).is_encrypted())
+            {
                 let model = self.model.read(cx);
                 let local_state = Arc::clone(&model.services().local_state);
                 let workspace = model.manifest().id;

@@ -241,7 +241,8 @@ async fn columns(client: &Client, oid: u32) -> DbResult<Vec<ColumnInfo>> {
                     format_type(base.oid, NULL), \
                     base.typtype = 'e', \
                     format_type(element.oid, NULL), \
-                    element.typtype = 'e' \
+                    element.typtype = 'e', \
+                    a.attgenerated <> '' OR a.attidentity = 'a' \
              FROM pg_catalog.pg_attribute a \
              JOIN pg_catalog.pg_type t ON t.oid = a.atttypid \
              JOIN pg_catalog.pg_type base ON base.oid = COALESCE(NULLIF(t.typbasetype, 0), t.oid) \
@@ -278,6 +279,7 @@ async fn columns(client: &Client, oid: u32) -> DbResult<Vec<ColumnInfo>> {
                 ordinal: index + 1,
                 comment: row.try_get(5).map_err(get_error)?,
                 decodable,
+                generated: row.try_get(10).map_err(get_error)?,
             })
         })
         .collect()

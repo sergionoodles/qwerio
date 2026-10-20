@@ -6,7 +6,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use async_trait::async_trait;
 use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
 use qwerio_core::driver::{
-    CancelOutcome, DatabaseCatalog, DatabaseSession, QueryRequest, TableBrowser,
+    CancelOutcome, DatabaseCatalog, DatabaseSession, QueryRequest, TableBrowser, TableEditor,
+};
+use qwerio_core::edit::{
+    RowEditRequest, SavedRow, render_change, returned_column_count, saved_row,
 };
 use qwerio_core::error::{DatabaseError, DbResult, ErrorKind};
 use qwerio_core::ids::RequestId;
@@ -14,6 +17,7 @@ use qwerio_core::paging::{Page, PagePlan, PageRequest};
 use qwerio_core::resource::{CatalogEntry, CatalogPath, ObjectRef};
 use qwerio_core::result::{ColumnDescriptor, EventSender, RequestEventKind, ResultStream, Row};
 use qwerio_core::session::{SessionInfo, TransactionState};
+use qwerio_core::sql::RenderedSql;
 use rusqlite::{Connection, params_from_iter};
 
 use crate::catalog;
@@ -154,7 +158,17 @@ fn fetch_page(connection: &Connection, plan: &PagePlan) -> DbResult<Page> {
         .collect();
     let column_count = columns.len();
 
-    let parameters = query.sql.params.iter().map(SqlValue);
+    let raw_rows = query_rows(&mut statement, &query.sql, column_count)?;
+
+    Ok(plan.build_page(columns, raw_rows))
+}
+
+fn query_rows(
+    statement: &mut rusqlite::Statement<'_>,
+    sql: &RenderedSql,
+    column_count: usize,
+) -> DbResult<Vec<Row>> {
+    let parameters = sql.params.iter().map(SqlValue);
     let mut rows = statement
         .query(params_from_iter(parameters))
         .map_err(map_error)?;
@@ -168,7 +182,72 @@ fn fetch_page(connection: &Connection, plan: &PagePlan) -> DbResult<Page> {
         raw_rows.push(values);
     }
 
-    Ok(plan.build_page(columns, raw_rows))
+    Ok(raw_rows)
+}
+
+#[async_trait]
+impl TableEditor for SqliteSession {
+    async fn apply_row_edits(&self, request: RowEditRequest) -> DbResult<Vec<SavedRow>> {
+        if self.shared.is_busy() {
+            return Err(DatabaseError::session_busy());
+        }
+
+        if self.transaction_state().is_open() {
+            return Err(DatabaseError::invalid_request(
+                "Finish the open transaction before saving edits",
+            ));
+        }
+
+        self.worker
+            .call(move |connection| apply_row_edits(connection, &request))
+            .await
+    }
+}
+
+/// Runs every change in one transaction, rolling back on the first failure.
+fn apply_row_edits(connection: &Connection, request: &RowEditRequest) -> DbResult<Vec<SavedRow>> {
+    let statements = request
+        .changes
+        .iter()
+        .map(|change| render_change(&SqliteDialect, &request.details, change))
+        .collect::<DbResult<Vec<_>>>()?;
+
+    connection.execute_batch("BEGIN").map_err(map_error)?;
+
+    let updated = statements
+        .iter()
+        .map(|sql| change_one_row(connection, sql, &request.details))
+        .collect::<DbResult<Vec<_>>>();
+
+    let finish = if updated.is_ok() {
+        "COMMIT"
+    } else {
+        "ROLLBACK"
+    };
+    let finished = connection.execute_batch(finish).map_err(map_error);
+    let rows = updated?;
+
+    // A failed COMMIT (deferred constraint, busy database) leaves the
+    // transaction open; the commit error is the one to report.
+    if let Err(error) = finished {
+        if !connection.is_autocommit() {
+            connection.execute_batch("ROLLBACK").map_err(map_error)?;
+        }
+
+        return Err(error);
+    }
+
+    Ok(rows)
+}
+
+fn change_one_row(
+    connection: &Connection,
+    sql: &RenderedSql,
+    details: &ObjectDetails,
+) -> DbResult<SavedRow> {
+    let mut statement = connection.prepare(&sql.text).map_err(map_error)?;
+    let rows = query_rows(&mut statement, sql, returned_column_count(details))?;
+    saved_row(details, rows)
 }
 
 #[async_trait]

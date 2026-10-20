@@ -1,11 +1,18 @@
 //! Headless UI tests: the real workbench in a GPUI test window, driven by
 //! clicks and keystrokes, against a temporary workspace and SQLite database.
 
+mod about_flows;
 mod connection_flows;
 mod console_flows;
 mod document_flows;
+mod edit_flows;
 mod explorer_flows;
+#[cfg(not(target_os = "macos"))]
+mod menu_flows;
+mod row_flows;
 mod schema_flows;
+mod settings_flows;
+mod workspace_files;
 mod workspace_flows;
 
 use std::path::{Path, PathBuf};
@@ -57,6 +64,13 @@ impl Fixture {
         std::fs::create_dir(&root).expect("workspace folder");
 
         let services = Arc::new(test_services());
+        services
+            .local_state
+            .set_setting(
+                "default_workspace_path",
+                &directory.path().join("Default.qwerio"),
+            )
+            .expect("default path");
         let mut workspace = Workspace::create(&root, "Shop").expect("workspace");
         let connection = workspace
             .add_connection(CONNECTION_NAME, EngineKind::Sqlite)

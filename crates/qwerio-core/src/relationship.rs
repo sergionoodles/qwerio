@@ -126,6 +126,7 @@ mod tests {
                     default: None,
                     ordinal: index + 1,
                     decodable: true,
+                    generated: false,
                     comment: None,
                 })
                 .collect(),

@@ -1,6 +1,14 @@
 //! Browsing one table or view: a virtualized grid of database pages with
 //! server-side sorting and filtering, a record inspector, relationship
-//! navigation, copy, and full export.
+//! navigation, copy, full export, and inline editing: cells, new rows, and
+//! deleted rows, saved together in one transaction.
+
+mod cell_editor;
+mod cell_render;
+mod cell_widgets;
+mod edits;
+mod paging;
+mod row_changes;
 
 use std::sync::Arc;
 
@@ -22,7 +30,8 @@ use gpui_kit::{
 };
 use qwerio_app::navigation::ViewState;
 use qwerio_app::services::export_table;
-use qwerio_app::table::{LoadStatus, PageFetch, TableBrowserState};
+use qwerio_app::table::{LoadStatus, TableBrowserState};
+use qwerio_app::table_edit_session::TableEditSession;
 use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
 use qwerio_core::driver::DatabaseSession;
 use qwerio_core::export::{ExportFormat, delimited_string};
@@ -34,7 +43,7 @@ use qwerio_workspace::document::DocumentKind;
 use qwerio_workspace::explorer::Location;
 use qwerio_workspace::manifest::DocumentId;
 
-use crate::actions::{Refresh, ToggleInspector};
+use crate::actions::{AddRow, DeleteRow, DuplicateRow, EditCell, Refresh, Save, ToggleInspector};
 use crate::content::ContentEvent;
 use crate::filter_panel::{FilterPanel, FilterPanelEvent};
 use crate::grid::{copy_text, grid_column, render_cell};
@@ -45,49 +54,19 @@ use crate::workspace_model::WorkspaceModel;
 pub struct TableGridDelegate {
     browser: TableBrowserState,
     session: Option<Arc<dyn DatabaseSession>>,
+    is_reloading: bool,
     owner: WeakEntity<TableView>,
+    edit_session: TableEditSession,
+    editing: Option<cell_widgets::ActiveEdit>,
+    /// Why the last edit attempt failed, shown in the status bar.
+    edit_error: Option<SharedString>,
+    /// The cell under the last right click, as (grid row, browser column).
+    right_clicked: Option<(usize, usize)>,
 }
 
 impl TableGridDelegate {
     fn visible(&self) -> Vec<usize> {
         self.browser.visible_columns()
-    }
-
-    /// Fetches a page; results for superseded requests are ignored by the
-    /// browser state.
-    fn fetch(&mut self, fetch: PageFetch, cx: &mut Context<TableState<Self>>) {
-        let Some(session) = self.session.clone() else {
-            return;
-        };
-
-        cx.spawn(async move |table, cx| {
-            let result = session.fetch_page(fetch.request).await;
-
-            table
-                .update(cx, |table, cx| {
-                    let columns_before = table.delegate().browser.columns().len();
-                    let applied = table
-                        .delegate_mut()
-                        .browser
-                        .apply_page(fetch.ticket, result);
-
-                    if applied && table.delegate().browser.columns().len() != columns_before {
-                        table.refresh(cx);
-                    }
-
-                    cx.notify();
-                })
-                .ok();
-        })
-        .detach();
-    }
-
-    fn restart(&mut self, fetch: Option<PageFetch>, cx: &mut Context<TableState<Self>>) {
-        if let Some(fetch) = fetch {
-            self.fetch(fetch, cx);
-        }
-
-        cx.notify();
     }
 }
 
@@ -97,7 +76,7 @@ impl TableDelegate for TableGridDelegate {
     }
 
     fn rows_count(&self, _: &App) -> usize {
-        self.browser.rows().len()
+        self.edit_session.pending().new_row_count() + self.browser.rows().len()
     }
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
@@ -140,6 +119,9 @@ impl TableDelegate for TableGridDelegate {
             return;
         };
 
+        if self.edit_session.is_saving() || !self.commit_edit(cx) {
+            return;
+        }
         let keys = match sort {
             ColumnSort::Default => Vec::new(),
             ColumnSort::Ascending => vec![SortKey::ascending(name)],
@@ -157,17 +139,50 @@ impl TableDelegate for TableGridDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) -> impl IntoElement {
-        let visible = self.visible();
+        let Some(column) = self.visible().get(col_ix).copied() else {
+            return div().into_any_element();
+        };
 
-        match visible.get(col_ix).and_then(|column| {
-            self.browser
-                .rows()
-                .get(row_ix)
-                .and_then(|row| row.get(*column))
-        }) {
-            Some(value) => render_cell(row_ix, col_ix, value, cx),
-            None => div().into_any_element(),
+        if self.is_editing(row_ix, column) {
+            return self.render_editor(row_ix, col_ix, cx);
         }
+
+        let cell = if self.is_checkbox_column(column) {
+            self.render_checkbox(row_ix, col_ix, column, cx)
+        } else if self.is_default_cell(row_ix, column) {
+            cell_render::render_default_cell(row_ix, col_ix, cx)
+        } else {
+            match self.cell_value(row_ix, column) {
+                Some(value) => render_cell(row_ix, col_ix, value, cx),
+                None => return div().into_any_element(),
+            }
+        };
+
+        let is_deleted = self.is_deleted_row(row_ix);
+        let tint = if is_deleted {
+            Some(cx.theme().danger.opacity(CHANGE_TINT_OPACITY))
+        } else if self.is_modified(row_ix, column) {
+            Some(cx.theme().warning.opacity(CHANGE_TINT_OPACITY))
+        } else if self.is_new_row(row_ix) {
+            Some(cx.theme().success.opacity(CHANGE_TINT_OPACITY))
+        } else {
+            None
+        };
+
+        let Some(tint) = tint else {
+            return cell;
+        };
+
+        div()
+            .size_full()
+            .px_1()
+            .rounded_sm()
+            .bg(tint)
+            .when(is_deleted, |this| {
+                this.line_through().text_color(cx.theme().muted_foreground)
+            })
+            .child(cell)
+            .into_any_element()
     }
 
     fn render_empty(
@@ -208,22 +223,21 @@ impl TableDelegate for TableGridDelegate {
         _: &mut Window,
         _: &mut Context<TableState<Self>>,
     ) -> PopupMenu {
-        let owner = self.owner.clone();
-        let inspect = {
-            let owner = owner.clone();
-            PopupMenuItem::new("Inspect Row").on_click(move |_, _, cx| {
-                owner
-                    .update(cx, |view, cx| view.inspect_row(row_ix, cx))
-                    .ok();
-            })
+        let menu = match self.loaded_row(row_ix) {
+            Some(_) => self.loaded_row_menu(row_ix, menu),
+            None => menu,
         };
-        let copy = PopupMenuItem::new("Copy Row").on_click(move |_, _, cx| {
-            owner
-                .update(cx, |view, cx| view.copy_rows(Some(row_ix), cx))
-                .ok();
-        });
 
-        menu.item(inspect).item(copy)
+        if !self.is_editable() {
+            return menu;
+        }
+
+        let menu = match self.right_clicked.filter(|(row, _)| *row == row_ix) {
+            Some((row, column)) => self.cell_edit_menu(row, column, menu),
+            None => menu,
+        };
+
+        self.row_change_menu(row_ix, menu)
     }
 
     fn has_more(&self, _: &App) -> bool {
@@ -235,6 +249,9 @@ impl TableDelegate for TableGridDelegate {
     }
 
     fn load_more(&mut self, _: &mut Window, cx: &mut Context<TableState<Self>>) {
+        if self.edit_session.is_saving() || self.editing.is_some() || self.is_reloading {
+            return;
+        }
         if let Some(fetch) = self.browser.load_more() {
             self.fetch(fetch, cx);
         }
@@ -245,14 +262,97 @@ impl TableDelegate for TableGridDelegate {
 
         visible
             .get(col_ix)
-            .and_then(|column| {
-                self.browser
-                    .rows()
-                    .get(row_ix)
-                    .and_then(|row| row.get(*column))
-            })
+            .and_then(|column| self.cell_value(row_ix, *column))
             .map(copy_text)
             .unwrap_or_default()
+    }
+}
+
+/// The background opacity of cells with unsaved changes.
+const CHANGE_TINT_OPACITY: f32 = 0.18;
+
+impl TableGridDelegate {
+    /// A menu item running `action` on the table view.
+    fn view_item(
+        &self,
+        label: &'static str,
+        action: impl Fn(&mut TableView, &mut Window, &mut Context<TableView>) + 'static,
+    ) -> PopupMenuItem {
+        let owner = self.owner.clone();
+        PopupMenuItem::new(label).on_click(move |_, window, cx| {
+            owner.update(cx, |view, cx| action(view, window, cx)).ok();
+        })
+    }
+
+    /// Inspect and copy items for a loaded row.
+    fn loaded_row_menu(&self, row: usize, menu: PopupMenu) -> PopupMenu {
+        menu.item(self.view_item("Inspect Row", move |view, _, cx| view.inspect_row(row, cx)))
+            .item(self.view_item("Copy Row", move |view, _, cx| view.copy_rows(Some(row), cx)))
+    }
+
+    /// Add, duplicate, and delete items for a row.
+    fn row_change_menu(&self, row: usize, menu: PopupMenu) -> PopupMenu {
+        let delete_label = if self.is_new_row(row) {
+            "Remove New Row"
+        } else if self.is_deleted_row(row) {
+            "Restore Row"
+        } else {
+            "Delete Row"
+        };
+        menu.separator()
+            .item(self.view_item("Add Row", |view, window, cx| view.add_row(None, window, cx)))
+            .item(self.view_item("Duplicate Row", move |view, window, cx| {
+                view.add_row(Some(row), window, cx)
+            }))
+            .item(self.view_item(delete_label, move |view, _, cx| {
+                view.toggle_delete_row(row, cx)
+            }))
+    }
+
+    /// Edit, NULL, and revert items for the right-clicked cell.
+    fn cell_edit_menu(&self, row: usize, column: usize, menu: PopupMenu) -> PopupMenu {
+        let item = |label: &'static str,
+                    action: fn(
+            &mut TableView,
+            usize,
+            usize,
+            &mut Window,
+            &mut Context<TableView>,
+        )| {
+            self.view_item(label, move |view, window, cx| {
+                action(view, row, column, window, cx)
+            })
+        };
+
+        if self.is_deleted_row(row) {
+            return menu;
+        }
+
+        let menu = menu
+            .separator()
+            .item(item("Edit Cell", |view, row, column, window, cx| {
+                view.edit_cell(row, column, window, cx)
+            }))
+            .item(item("Set Cell to NULL", |view, row, column, _, cx| {
+                view.grid
+                    .update(cx, |grid, cx| grid.delegate_mut().set_null(row, column, cx))
+            }));
+
+        if !self.is_modified(row, column) {
+            return menu;
+        }
+
+        let revert_label = if self.is_new_row(row) {
+            "Reset Cell to Default"
+        } else {
+            "Revert Cell"
+        };
+
+        menu.item(item(revert_label, |view, row, column, _, cx| {
+            view.grid.update(cx, |grid, cx| {
+                grid.delegate_mut().revert_cell(row, column, cx)
+            })
+        }))
     }
 }
 
@@ -283,7 +383,12 @@ impl TableView {
         let delegate = TableGridDelegate {
             browser: TableBrowserState::new(object.clone(), view.clone()),
             session: None,
+            is_reloading: false,
             owner,
+            edit_session: TableEditSession::default(),
+            editing: None,
+            edit_error: None,
+            right_clicked: None,
         };
         let grid = cx.new(|cx| {
             TableState::new(delegate, window, cx)
@@ -299,8 +404,8 @@ impl TableView {
                 cx.emit(ContentEvent::Changed);
                 cx.notify();
             }),
-            cx.subscribe(&grid, |this, _, event: &TableEvent, cx| {
-                this.on_grid_event(event, cx)
+            cx.subscribe_in(&grid, window, |this, _, event: &TableEvent, window, cx| {
+                this.on_grid_event(event, window, cx)
             }),
             cx.subscribe(
                 &filter_panel,
@@ -352,7 +457,11 @@ impl TableView {
     pub fn status_text(&self, cx: &App) -> SharedString {
         let browser = &self.grid.read(cx).delegate().browser;
 
-        if let Some(error) = &self.error {
+        if let Some(error) =
+            self.error
+                .as_ref()
+                .or(self.grid.read(cx).delegate().edit_error.as_ref())
+        {
             return error.clone();
         }
 
@@ -392,6 +501,10 @@ impl TableView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.grid.update(cx, |grid, cx| {
+            grid.delegate_mut().is_reloading = true;
+            cx.notify();
+        });
         self.error = None;
         let object = self.object.clone();
         let session =
@@ -412,6 +525,7 @@ impl TableView {
                 Ok((session, details)) => this.show(session, details, filters, window, cx),
                 Err(error) => {
                     this.grid.update(cx, |grid, cx| {
+                        grid.delegate_mut().is_reloading = false;
                         grid.delegate_mut().browser.details_failed(
                             qwerio_core::error::DatabaseError::new(
                                 qwerio_core::error::ErrorKind::Other,
@@ -447,6 +561,10 @@ impl TableView {
         self.grid.update(cx, |grid, cx| {
             let delegate = grid.delegate_mut();
             delegate.session = Some(session);
+            delegate.is_reloading = false;
+            delegate
+                .edit_session
+                .edit_pending(|edits| edits.retain_columns(&details));
             let fetch = delegate.browser.set_details(details);
             delegate.fetch(fetch, cx);
             grid.refresh(cx);
@@ -472,19 +590,35 @@ impl TableView {
 
     fn set_filters(&mut self, filters: Vec<Filter>, cx: &mut Context<Self>) {
         self.grid.update(cx, |grid, cx| {
-            let fetch = grid.delegate_mut().browser.set_filters(filters);
+            let delegate = grid.delegate_mut();
+            if delegate.edit_session.is_saving() || !delegate.commit_edit(cx) {
+                return;
+            }
+            let fetch = delegate.browser.set_filters(filters);
             grid.delegate_mut().restart(fetch, cx);
         });
     }
 
     pub fn refresh(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_saving(cx) {
+            return;
+        }
+        let committed = self
+            .grid
+            .update(cx, |grid, cx| grid.delegate_mut().commit_edit(cx));
+        if !committed {
+            return;
+        }
         let filters = self.view_state(cx).filters;
         self.load(true, filters, window, cx);
     }
 
-    fn on_grid_event(&mut self, event: &TableEvent, cx: &mut Context<Self>) {
+    fn on_grid_event(&mut self, event: &TableEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.track_editing(event, window, cx);
+
         let row = match event {
             TableEvent::SelectRow(row) | TableEvent::SelectCell(row, _) => Some(*row),
+            TableEvent::DoubleClickedCell(row, _) if self.is_editable(cx) => Some(*row),
             TableEvent::DoubleClickedRow(row) | TableEvent::DoubleClickedCell(row, _) => {
                 self.inspector_open = true;
                 Some(*row)
@@ -495,7 +629,9 @@ impl TableView {
         if let Some(row) = row {
             self.selected_row = Some(row);
             self.grid.update(cx, |grid, _| {
-                grid.delegate_mut().browser.select_row(Some(row))
+                let delegate = grid.delegate_mut();
+                let loaded = delegate.loaded_row(row);
+                delegate.browser.select_row(loaded)
             });
             cx.notify();
         }
@@ -510,11 +646,12 @@ impl TableView {
     /// Copies loaded rows (or one row) as tab-separated text. Only rows that
     /// are loaded are copied; use Export for the whole table.
     fn copy_rows(&mut self, row: Option<usize>, cx: &mut Context<Self>) {
-        let browser = &self.grid.read(cx).delegate().browser;
+        let delegate = self.grid.read(cx).delegate();
+        let browser = &delegate.browser;
         let rows = match row {
-            Some(row) => browser
-                .rows()
-                .get(row)
+            Some(row) => delegate
+                .loaded_row(row)
+                .and_then(|row| browser.rows().get(row))
                 .cloned()
                 .into_iter()
                 .collect::<Vec<_>>(),
@@ -539,7 +676,7 @@ impl TableView {
             sort: view.sort,
             ..qwerio_core::paging::PageRequest::first(details)
         };
-        let directory = self.model.read(cx).root().clone();
+        let directory = self.model.read(cx).directory();
         let file_name = format!(
             "{}.csv",
             qwerio_app::templates::file_stem(&self.object.name)
@@ -589,11 +726,12 @@ impl TableView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(row) = self.selected_row else {
+        let delegate = self.grid.read(cx).delegate();
+        let Some(row) = self.selected_row.and_then(|row| delegate.loaded_row(row)) else {
             return;
         };
 
-        let browser = &self.grid.read(cx).delegate().browser;
+        let browser = &delegate.browser;
         let outcome = if referencing {
             browser.follow_referencing(row, &foreign_key)
         } else {
@@ -625,8 +763,9 @@ impl TableView {
     }
 
     fn filter_by_cell(&mut self, column: usize, cx: &mut Context<Self>) {
-        let browser = &self.grid.read(cx).delegate().browser;
-        let Some(row) = self.selected_row else {
+        let delegate = self.grid.read(cx).delegate();
+        let browser = &delegate.browser;
+        let Some(row) = self.selected_row.and_then(|row| delegate.loaded_row(row)) else {
             return;
         };
         let (Some(descriptor), Some(value)) = (
@@ -744,6 +883,8 @@ impl TableView {
             )
             .child(self.render_documents_menu(cx))
             .child(div().flex_1())
+            .children(self.render_row_controls(cx))
+            .children(self.render_edit_controls(cx))
             .child(
                 Button::new("inspector")
                     .ghost()
@@ -817,9 +958,16 @@ impl TableView {
     }
 
     fn render_inspector(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let browser = &self.grid.read(cx).delegate().browser;
+        let delegate = self.grid.read(cx).delegate();
+        let browser = &delegate.browser;
         let details = browser.details().cloned();
-        let row = self.selected_row.filter(|row| *row < browser.rows().len());
+        let is_new_row = self
+            .selected_row
+            .is_some_and(|row| delegate.is_new_row(row));
+        let row = self
+            .selected_row
+            .and_then(|row| delegate.loaded_row(row))
+            .filter(|row| *row < browser.rows().len());
 
         let body = match (details, row) {
             (Some(details), Some(row)) => {
@@ -953,7 +1101,11 @@ impl TableView {
             _ => div()
                 .text_sm()
                 .text_color(cx.theme().muted_foreground)
-                .child("Select a row to see its values and related records.")
+                .child(if is_new_row {
+                    "This row is new: edit its values in the grid and save to insert it."
+                } else {
+                    "Select a row to see its values and related records."
+                })
                 .into_any_element(),
         };
 
@@ -996,6 +1148,17 @@ impl Render for TableView {
             .min_w_0()
             .min_h_0()
             .on_action(cx.listener(|this, _: &Refresh, window, cx| this.refresh(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &Save, window, cx| this.save_edits(window, cx).detach()),
+            )
+            .on_action(
+                cx.listener(|this, _: &EditCell, window, cx| this.edit_selected_cell(window, cx)),
+            )
+            .on_action(cx.listener(|this, _: &AddRow, window, cx| this.add_row(None, window, cx)))
+            .on_action(cx.listener(|this, _: &DuplicateRow, window, cx| {
+                this.duplicate_selected_row(window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &DeleteRow, _, cx| this.delete_selected_row(cx)))
             .on_action(cx.listener(|this, _: &ToggleInspector, _, cx| {
                 this.inspector_open = !this.inspector_open;
                 cx.notify();

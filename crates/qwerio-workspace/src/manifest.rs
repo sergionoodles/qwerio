@@ -63,6 +63,10 @@ pub struct Manifest {
     pub folders: Vec<FolderEntry>,
     #[serde(default)]
     pub documents: Vec<DocumentEntry>,
+    #[serde(default = "crate::labels::default_labels")]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub label_assignments: Vec<crate::labels::LabelAssignment>,
 }
 
 impl Manifest {
@@ -74,6 +78,8 @@ impl Manifest {
             connections: Vec::new(),
             folders: Vec::new(),
             documents: Vec::new(),
+            labels: crate::labels::default_labels(),
+            label_assignments: Vec::new(),
         }
     }
 

@@ -15,6 +15,20 @@ pub enum ColumnRef {
     Locator,
 }
 
+/// The columns that uniquely identify a row: a NULL-free unique key (the
+/// primary key first), or else the hidden row locator. `None` when rows have
+/// no identity, so they can be neither keyset-paged nor edited.
+pub fn row_identity(details: &ObjectDetails) -> Option<Vec<ColumnRef>> {
+    if let Some(key) = details.unique_row_key() {
+        return Some(key.columns.iter().cloned().map(ColumnRef::Column).collect());
+    }
+
+    details
+        .row_locator
+        .as_ref()
+        .map(|_| vec![ColumnRef::Locator])
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CompareOp {
     Equal,
@@ -203,7 +217,9 @@ impl<'a> SqlRenderer<'a> {
         }
     }
 
-    fn bind(&mut self, value: Value, column: Option<&ColumnInfo>) -> String {
+    /// Binds a parameter and returns its placeholder, converted to `column`'s
+    /// type when given.
+    pub fn bind(&mut self, value: Value, column: Option<&ColumnInfo>) -> String {
         self.params.push(value);
         self.dialect.placeholder(self.params.len(), column)
     }

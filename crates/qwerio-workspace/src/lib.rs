@@ -1,9 +1,6 @@
-//! Workspaces: a user-selected folder of ordinary `.sql`, `.md`, and `.txt`
-//! files plus a versioned manifest that places documents beside database
-//! objects, associates them with objects, and records execution bindings.
-//!
-//! Virtual database entries never exist as directories on disk, and moving an
-//! entry in the explorer changes organization only.
+//! Portable `.qwerio` files containing workspace organization, documents, and
+//! connection details, optionally encrypted. Legacy folder manifests remain
+//! supported for opening and importing existing workspaces.
 
 pub mod document;
 pub mod error;
@@ -15,3 +12,8 @@ pub mod workspace;
 
 pub use error::{WorkspaceError, WorkspaceResult};
 pub use workspace::{MovableEntry, Workspace};
+
+pub mod file;
+pub mod labels;
+
+mod file_workspace;

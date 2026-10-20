@@ -6,19 +6,21 @@ use std::sync::{Arc, Mutex as StdMutex, PoisonError};
 use async_trait::async_trait;
 use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
 use qwerio_core::driver::{
-    CancelOutcome, DatabaseCatalog, DatabaseSession, QueryRequest, TableBrowser,
+    CancelOutcome, DatabaseCatalog, DatabaseSession, QueryRequest, TableBrowser, TableEditor,
 };
+use qwerio_core::edit::{RowEditRequest, SavedRow, render_change, saved_row};
 use qwerio_core::error::{DatabaseError, DbResult, ErrorKind};
 use qwerio_core::ids::RequestId;
 use qwerio_core::paging::{Page, PagePlan, PageRequest};
 use qwerio_core::resource::{CatalogEntry, CatalogPath, ObjectRef};
-use qwerio_core::result::{ColumnDescriptor, EventSender, RequestEventKind, ResultStream};
+use qwerio_core::result::{ColumnDescriptor, EventSender, RequestEventKind, ResultStream, Row};
 use qwerio_core::session::{SessionInfo, TransactionState};
+use qwerio_core::sql::RenderedSql;
 use qwerio_core::value::{UnsupportedValue, Value};
 use tokio::runtime::Handle;
 use tokio::sync::Mutex;
 use tokio_postgres::types::{ToSql, Type};
-use tokio_postgres::{CancelToken, Client, NoTls};
+use tokio_postgres::{CancelToken, Client, GenericClient, NoTls};
 use tokio_postgres_rustls::MakeRustlsConnect;
 
 use crate::catalog;
@@ -226,17 +228,46 @@ impl TableBrowser for PostgresSession {
 
 async fn fetch_page(client: &Client, plan: &PagePlan, details: &ObjectDetails) -> DbResult<Page> {
     let query = plan.render(&PostgresDialect)?;
-    let sql = query.sql.text.as_str();
-    let map = |error| map_error(error, Some(sql));
+    let (statement, rows) = query_rendered(client, &query.sql).await?;
 
-    let parameter_types = vec![Type::TEXT; query.sql.params.len()];
+    let columns: Vec<ColumnDescriptor> = statement
+        .columns()
+        .iter()
+        .map(|column| ColumnDescriptor::new(column.name(), column.type_().name()))
+        .collect();
+
+    let raw_rows = rows
+        .iter()
+        .map(|row| decode_data_row(row, details))
+        .collect();
+
+    let mut page = plan.build_page(columns, raw_rows);
+
+    // Report the catalog's type names for data columns.
+    for (descriptor, column) in page.columns.iter_mut().zip(&details.columns) {
+        descriptor.type_name = column.type_name.clone();
+        descriptor.nullable = Some(column.nullable);
+    }
+
+    Ok(page)
+}
+
+/// Prepares generated SQL with every parameter typed as text (the SQL casts
+/// them) and runs it.
+async fn query_rendered(
+    client: &impl GenericClient,
+    sql: &RenderedSql,
+) -> DbResult<(tokio_postgres::Statement, Vec<tokio_postgres::Row>)> {
+    let text = sql.text.as_str();
+    let map = |error| map_error(error, Some(text));
+
+    let parameter_types = vec![Type::TEXT; sql.params.len()];
     let statement = client
-        .prepare_typed(sql, &parameter_types)
+        .prepare_typed(text, &parameter_types)
         .await
         .map_err(map)?;
 
-    let parameters = query
-        .sql
+    let parameters = sql
         .params
         .iter()
         .map(value_to_text)
@@ -252,30 +283,65 @@ async fn fetch_page(client: &Client, plan: &PagePlan, details: &ObjectDetails) -
         .await
         .map_err(map)?;
 
-    let columns: Vec<ColumnDescriptor> = statement
-        .columns()
-        .iter()
-        .map(|column| ColumnDescriptor::new(column.name(), column.type_().name()))
-        .collect();
+    Ok((statement, rows))
+}
 
-    let raw_rows = rows
-        .iter()
-        .map(|row| {
-            let mut values = decode_row(row);
-            mark_text_fallbacks(&mut values, details);
-            values
+fn decode_data_row(row: &tokio_postgres::Row, details: &ObjectDetails) -> Row {
+    let mut values = decode_row(row);
+    mark_text_fallbacks(&mut values, details);
+    values
+}
+
+#[async_trait]
+impl TableEditor for PostgresSession {
+    async fn apply_row_edits(&self, request: RowEditRequest) -> DbResult<Vec<SavedRow>> {
+        if self.state.active_request().is_some() {
+            return Err(DatabaseError::session_busy());
+        }
+
+        if self.transaction_state().is_open() {
+            return Err(DatabaseError::invalid_request(
+                "Finish the open transaction before saving edits",
+            ));
+        }
+
+        self.with_client(move |client| {
+            Box::pin(async move { apply_row_edits(client, &request).await })
         })
-        .collect();
+        .await
+    }
+}
 
-    let mut page = plan.build_page(columns, raw_rows);
+/// Runs every change in one transaction; dropping an uncommitted transaction
+/// rolls it back.
+async fn apply_row_edits(client: &mut Client, request: &RowEditRequest) -> DbResult<Vec<SavedRow>> {
+    let statements = request
+        .changes
+        .iter()
+        .map(|change| render_change(&PostgresDialect, &request.details, change))
+        .collect::<DbResult<Vec<_>>>()?;
 
-    // Report the catalog's type names for data columns.
-    for (descriptor, column) in page.columns.iter_mut().zip(&details.columns) {
-        descriptor.type_name = column.type_name.clone();
-        descriptor.nullable = Some(column.nullable);
+    let transaction = client
+        .transaction()
+        .await
+        .map_err(|error| map_error(error, Some("BEGIN")))?;
+    let mut updated = Vec::with_capacity(statements.len());
+
+    for sql in &statements {
+        let (_, rows) = query_rendered(&transaction, sql).await?;
+        let rows = rows
+            .iter()
+            .map(|row| decode_data_row(row, &request.details))
+            .collect();
+        updated.push(saved_row(&request.details, rows)?);
     }
 
-    Ok(page)
+    transaction
+        .commit()
+        .await
+        .map_err(|error| map_error(error, Some("COMMIT")))?;
+
+    Ok(updated)
 }
 
 /// Columns read as text because they cannot be decoded natively become

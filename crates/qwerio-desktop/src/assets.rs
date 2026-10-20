@@ -41,6 +41,8 @@ gpui_kit::assets::icon_assets!(
         StickyNote,
         CornerDownRight,
         ArrowUpRight,
+        Tag,
+        Scale,
         X
     ]
 );
