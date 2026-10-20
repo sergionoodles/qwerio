@@ -56,6 +56,8 @@ pub(crate) async fn connect(request: ConnectRequest<'_>) -> DbResult<Connected> 
         }
     };
 
+    configure_session(&client, &request).await?;
+
     let server_version = client
         .query_one("SHOW server_version", &[])
         .await
@@ -118,10 +120,9 @@ where
                 let mapped = map_error(error, None);
                 // A later unreachable address must not hide a TLS or server
                 // error from an address we did reach.
-                if failure
-                    .as_ref()
-                    .is_none_or(|previous| previous.kind == ErrorKind::Connection)
-                {
+                if failure.as_ref().is_none_or(|previous| {
+                    previous.kind == ErrorKind::Connection && previous.code.is_none()
+                }) {
                     failure = Some(mapped);
                 }
             }
@@ -164,25 +165,34 @@ fn build_config(request: &ConnectRequest<'_>) -> Config {
         TlsMode::VerifyFull { .. } => SslMode::Require,
     });
 
+    config
+}
+
+async fn configure_session(client: &Client, request: &ConnectRequest<'_>) -> DbResult<()> {
     let mut server_settings = Vec::new();
 
+    // Some poolers reject these settings in the startup options. Apply them
+    // after connecting, before exposing the session to callers.
     // A session default, not a security boundary: arbitrary SQL can change
     // it. Generated browsing queries never do.
     if request.access == AccessMode::ReadOnly {
-        server_settings.push("-c default_transaction_read_only=on".to_owned());
+        server_settings.push("SET default_transaction_read_only = on".to_owned());
     }
 
     if request.purpose == SessionPurpose::Browse {
         server_settings.push(format!(
-            "-c statement_timeout={BROWSE_STATEMENT_TIMEOUT_MS}"
+            "SET statement_timeout = {BROWSE_STATEMENT_TIMEOUT_MS}"
         ));
     }
 
-    if !server_settings.is_empty() {
-        config.options(server_settings.join(" "));
+    if server_settings.is_empty() {
+        return Ok(());
     }
 
-    config
+    client
+        .batch_execute(&server_settings.join("; "))
+        .await
+        .map_err(|error| map_error(error, None))
 }
 
 /// A rustls connector that validates the certificate chain against the

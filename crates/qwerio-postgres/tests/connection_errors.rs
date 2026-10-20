@@ -17,6 +17,8 @@ use tokio::net::{TcpListener, TcpStream};
 const TEST_TIMEOUT: Duration = Duration::from_secs(5);
 const SSL_REQUEST: [u8; 8] = [0, 0, 0, 8, 4, 210, 22, 47];
 const STARTUP_LENGTH_BYTES: usize = std::mem::size_of::<u32>();
+const AUTHENTICATED: &[u8] = &[b'R', 0, 0, 0, 8, 0, 0, 0, 0];
+const READY_FOR_QUERY: &[u8] = &[b'Z', 0, 0, 0, 5, b'I'];
 
 fn request(endpoint: SocketAddr, tls: TlsMode) -> OpenSessionRequest {
     OpenSessionRequest {
@@ -46,6 +48,13 @@ async fn send_error(stream: &mut TcpStream, code: &str, message: &str) {
     stream.write_all(b"E").await.expect("error type");
     stream.write_u32(length).await.expect("error length");
     stream.write_all(fields.as_bytes()).await.expect("error");
+}
+
+async fn read_message_body(stream: &mut TcpStream) -> Vec<u8> {
+    let length = stream.read_u32().await.expect("message length");
+    let mut body = vec![0; usize::try_from(length).expect("message length") - STARTUP_LENGTH_BYTES];
+    stream.read_exact(&mut body).await.expect("message body");
+    body
 }
 
 #[tokio::test]
@@ -84,10 +93,7 @@ async fn session_defaults_do_not_prevent_startup_through_a_pooler() {
     let endpoint = listener.local_addr().expect("local address");
     let server = tokio::spawn(async move {
         let (mut stream, _) = listener.accept().await.expect("accept");
-        let length = stream.read_u32().await.expect("startup length");
-        let mut startup =
-            vec![0; usize::try_from(length).expect("startup length") - STARTUP_LENGTH_BYTES];
-        stream.read_exact(&mut startup).await.expect("startup");
+        let startup = read_message_body(&mut stream).await;
         let has_options = startup[STARTUP_LENGTH_BYTES..]
             .split(|byte| *byte == 0)
             .step_by(2)
@@ -119,4 +125,36 @@ async fn session_defaults_do_not_prevent_startup_through_a_pooler() {
 
     assert_eq!(error.kind, ErrorKind::Authentication, "{error}");
     assert_eq!(error.message, AUTHENTICATION_MESSAGE);
+}
+
+#[tokio::test]
+async fn session_configuration_errors_prevent_opening_a_session() {
+    const SETTING_ERROR_MESSAGE: &str = "permission denied to set parameter statement_timeout";
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let endpoint = listener.local_addr().expect("local address");
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept");
+        let _startup = read_message_body(&mut stream).await;
+        stream.write_all(AUTHENTICATED).await.expect("authenticate");
+        stream.write_all(READY_FOR_QUERY).await.expect("ready");
+
+        let _message_type = stream.read_u8().await.expect("query message");
+        let _query = read_message_body(&mut stream).await;
+        send_error(&mut stream, "42501", SETTING_ERROR_MESSAGE).await;
+        stream.write_all(READY_FOR_QUERY).await.expect("ready");
+    });
+
+    let error = tokio::time::timeout(
+        TEST_TIMEOUT,
+        PostgresDriver::new(tokio::runtime::Handle::current())
+            .open(request(endpoint, TlsMode::Disable)),
+    )
+    .await
+    .expect("connection completes")
+    .err()
+    .expect("session configuration must succeed before opening");
+    server.await.expect("server task");
+
+    assert_eq!(error.kind, ErrorKind::Permission);
+    assert_eq!(error.message, SETTING_ERROR_MESSAGE);
 }
