@@ -293,7 +293,6 @@ impl Workbench {
             .size_full()
             .items_center()
             .justify_center()
-            .bg(cx.theme().background)
             .child(
                 v_flex()
                     .w(px(440.))
@@ -355,7 +354,6 @@ impl Render for Workbench {
             .key_context(WORKBENCH_CONTEXT)
             .track_focus(&self.focus_handle)
             .size_full()
-            .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_action(cx.listener(|this, _: &OpenWorkspace, window, cx| {
                 this.prompt_and_open(false, window, cx)

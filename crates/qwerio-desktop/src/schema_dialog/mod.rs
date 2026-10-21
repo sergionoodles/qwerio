@@ -21,6 +21,7 @@ use qwerio_core::ids::ConnectionId;
 use qwerio_core::resource::{CatalogPath, ObjectRef};
 
 use self::column_row::ColumnRow;
+use crate::theme::glass;
 use crate::workspace_model::WorkspaceModel;
 
 const TABLE_DIALOG_WIDTH: f32 = 680.;
@@ -110,7 +111,7 @@ pub fn open(
     let form = cx.new(|cx| SchemaForm::new(model, target, capabilities, on_created, window, cx));
     let focus = Cell::new(true);
 
-    window.open_dialog(cx, move |dialog, window, cx| {
+    glass::open_dialog(window, cx, move |dialog, window, cx| {
         if focus.replace(false) {
             let handle = form.read(cx).first_input().read(cx).focus_handle(cx);
             window.focus(&handle, cx);

@@ -47,6 +47,7 @@ use crate::content::{ContentEvent, entry_icon};
 use crate::document_view::{DocumentSource, DocumentView};
 use crate::explorer_view::{ExplorerLayout, ExplorerView};
 use crate::table_view::TableView;
+use crate::theme::glass;
 use crate::workspace_model::{WorkspaceEvent, WorkspaceModel, error_text};
 
 /// Below this width the sidebar and inspector start hidden.
@@ -999,7 +1000,7 @@ impl WorkspaceShell {
             })
         };
 
-        window.open_dialog(cx, move |dialog, window, cx| {
+        glass::open_dialog(window, cx, move |dialog, window, cx| {
             if focus.replace(false) {
                 let handle = input.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
@@ -1223,7 +1224,7 @@ impl WorkspaceShell {
         let commands = palette_commands();
         let focus = std::cell::Cell::new(true);
 
-        window.open_dialog(cx, move |dialog, window, cx| {
+        glass::open_dialog(window, cx, move |dialog, window, cx| {
             if focus.replace(false) {
                 let handle = state.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);

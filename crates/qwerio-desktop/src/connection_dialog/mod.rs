@@ -33,6 +33,7 @@ use qwerio_core::connection::{
 use qwerio_core::connection_string::{parse_connection_string, parse_mysql_connection_string};
 use qwerio_core::ids::ConnectionId;
 
+use crate::theme::glass;
 use crate::workspace_model::{WorkspaceModel, error_text};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -114,7 +115,7 @@ pub fn open(
         "New Connection"
     };
 
-    window.open_dialog(cx, move |dialog, _, cx| {
+    glass::open_dialog(window, cx, move |dialog, _, cx| {
         dialog
             .title(title)
             .w(px(DIALOG_WIDTH))

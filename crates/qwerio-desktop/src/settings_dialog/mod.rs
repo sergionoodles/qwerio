@@ -12,8 +12,7 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogClose;
 use gpui_kit::component::scroll::ScrollableElement as _;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Selectable as _, Sizable as _, StyledExt as _, WindowExt as _, h_flex,
-    v_flex,
+    ActiveTheme as _, Icon, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -23,6 +22,7 @@ use gpui_kit::{
 };
 
 use crate::theme::controller::ThemeController;
+use crate::theme::glass;
 use appearance::AppearanceSettings;
 
 const DIALOG_WIDTH: f32 = 720.;
@@ -79,7 +79,7 @@ pub fn open(
 ) {
     let view = cx.new(|cx| SettingsView::new(theme, model, window, cx));
 
-    window.open_dialog(cx, move |dialog, _, _| {
+    glass::open_dialog(window, cx, move |dialog, _, _| {
         dialog
             .title("Settings")
             .w(px(DIALOG_WIDTH))

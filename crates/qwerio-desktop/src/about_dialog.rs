@@ -5,7 +5,7 @@ use gpui_kit::assets::IconName as LucideIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::dialog::DialogClose;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
     App, InteractiveElement as _, IntoElement, ParentElement as _, Role,
@@ -13,6 +13,7 @@ use gpui_kit::{
 };
 
 use crate::assets::LOGO_PATH;
+use crate::theme::glass;
 
 pub const APP_NAME: &str = "Qwerio";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -27,7 +28,7 @@ const LOGO_TILE_RADIUS: f32 = 28.;
 
 /// Opens the dialog; Escape, the close button, or Close dismiss it.
 pub fn open(window: &mut Window, cx: &mut App) {
-    window.open_dialog(cx, |dialog, _, cx| {
+    glass::open_dialog(window, cx, |dialog, _, cx| {
         dialog.w(px(DIALOG_WIDTH)).child(render_body(cx)).footer(
             h_flex().w_full().justify_end().child(
                 DialogClose::new().child(Button::new("about-close").primary().label("Close")),
