@@ -908,7 +908,7 @@ fn render_step_heading(
     cx: &App,
 ) -> impl IntoElement {
     v_flex()
-        .gap_1()
+        .gap_0p5()
         .children(title.map(|title| div().text_base().font_semibold().child(title)))
         .child(
             div()
