@@ -5971,7 +5971,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "qwerio-core",
  "qwerio-sqlite",
@@ -5986,7 +5986,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -5996,7 +5996,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "directories",
@@ -6020,7 +6020,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-mysql"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -6031,7 +6031,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-postgres"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "fallible-iterator 0.2.0",
@@ -6047,7 +6047,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-sqlite"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "qwerio-core",
@@ -6058,7 +6058,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-workspace"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "notify",
  "qwerio-core",

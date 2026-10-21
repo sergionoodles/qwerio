@@ -8,7 +8,9 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::separator::Separator;
 use gpui_kit::component::toolbar::{Toolbar, ToolbarGroup};
-use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _};
+use gpui_kit::component::{
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, Size, h_flex,
+};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Context, FocusHandle, IntoElement, OwnedMenuItem, ParentElement as _, Styled as _, Window, div,
@@ -16,11 +18,11 @@ use gpui_kit::{
 use qwerio_app::navigation::ViewState;
 use qwerio_core::resource::ObjectKind;
 use qwerio_workspace::document::DocumentKind;
-use qwerio_workspace::explorer::{EntryKind, breadcrumbs};
+use qwerio_workspace::explorer::{EntryKind, Location, breadcrumbs};
 
 use super::{TabContent, WorkspaceShell};
 use crate::about_dialog;
-use crate::actions::OpenSettings;
+use crate::actions::{NewWorkspace, OpenSettings, OpenWorkspace};
 use crate::connection_dialog;
 use crate::content::{document_icon, entry_icon, object_icon};
 use crate::explorer_view::ExplorerLayout;
@@ -92,7 +94,8 @@ impl WorkspaceShell {
             );
 
         Toolbar::new("workspace-toolbar")
-            .h_10()
+            .with_size(Size::Medium)
+            .h_12()
             .px_2()
             .border_b_1()
             .border_color(cx.theme().border)
@@ -110,20 +113,37 @@ impl WorkspaceShell {
             .content(group_separator())
             .child(self.render_workspace_group(cx))
             .content(group_separator())
+            .child(self.render_tabs_group(cx))
+            .content(group_separator())
             .child(view)
             .content(group_separator())
             .child(render_app_group(self.focus_handle.clone()))
     }
 
-    fn render_breadcrumb(&self, cx: &mut Context<Self>) -> Breadcrumb {
+    /// The workspace name, with a caret for switching workspaces, then the
+    /// path to the focused location.
+    fn render_breadcrumb(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let manifest = std::sync::Arc::clone(self.model.read(cx).manifest());
-        let crumbs = breadcrumbs(&manifest, &self.focused_location());
-        let last = crumbs.len().saturating_sub(1);
+        let mut crumbs = breadcrumbs(&manifest, &self.focused_location());
+        let path = crumbs.split_off(1);
+        let last = path.len().saturating_sub(1);
+        let is_at_root = path.is_empty();
 
-        crumbs
-            .into_iter()
-            .enumerate()
-            .fold(Breadcrumb::new(), |breadcrumb, (index, crumb)| {
+        let workspace = Button::new("place-root")
+            .ghost()
+            .small()
+            .label(manifest.name.clone())
+            .accessibility_label(manifest.name.clone())
+            .when(!is_at_root, |button| {
+                button.text_color(cx.theme().muted_foreground)
+            })
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.navigate(Location::Root, ViewState::default(), false, window, cx);
+            }));
+
+        let path_breadcrumb = path.into_iter().enumerate().fold(
+            Breadcrumb::new().text_base().gap_2(),
+            |breadcrumb, (index, crumb)| {
                 if index == last {
                     return breadcrumb.child(BreadcrumbItem::new(crumb.label));
                 }
@@ -134,6 +154,23 @@ impl WorkspaceShell {
                         this.navigate(target.clone(), ViewState::default(), false, window, cx);
                     },
                 )))
+            },
+        );
+
+        h_flex()
+            .items_center()
+            .gap_0p5()
+            .text_base()
+            .child(workspace)
+            .child(render_workspace_menu(self.focus_handle.clone()))
+            .when(!is_at_root, |this| {
+                this.child(
+                    Icon::new(IconName::ChevronRight)
+                        .text_color(cx.theme().muted_foreground)
+                        .size_3p5()
+                        .mx_1(),
+                )
+                .child(path_breadcrumb)
             })
     }
 
@@ -218,6 +255,29 @@ impl WorkspaceShell {
             )
     }
 
+    fn render_tabs_group(&self, cx: &mut Context<Self>) -> ToolbarGroup {
+        ToolbarGroup::new("toolbar-tabs")
+            .label("Tabs")
+            .child(
+                Button::new("new-tab")
+                    .ghost()
+                    .icon(IconName::Plus)
+                    .tooltip("New tab")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let location = this.focused_location();
+                        this.navigate(location, ViewState::default(), true, window, cx);
+                    })),
+            )
+            .child(
+                Button::new("split")
+                    .ghost()
+                    .icon(Icon::new(LucideIcon::Split))
+                    .tooltip("Split")
+                    .toggled(self.tabs.split().is_some())
+                    .on_click(cx.listener(|this, _, window, cx| this.toggle_split(window, cx))),
+            )
+    }
+
     /// List, icons, or relationship graph; the graph only where the explorer
     /// lists tables or views.
     fn render_layout_buttons(&self, cx: &mut Context<Self>) -> Vec<Button> {
@@ -263,19 +323,33 @@ impl WorkspaceShell {
     }
 }
 
+/// New and open, dispatched through the shell so the workbench handles them.
+fn render_workspace_menu(shell_focus: FocusHandle) -> impl IntoElement {
+    Button::new("workspace-menu")
+        .ghost()
+        .xsmall()
+        .icon(IconName::ChevronDown)
+        .tooltip("Workspaces")
+        .accessibility_label("Workspaces")
+        .dropdown_menu(move |menu, _, _| {
+            menu.action_context(shell_focus.clone())
+                .item(PopupMenuItem::new("New Workspace…").action(Box::new(NewWorkspace)))
+                .item(PopupMenuItem::new("Open Workspace…").action(Box::new(OpenWorkspace)))
+        })
+}
+
 fn render_application_menu(action_focus: FocusHandle) -> impl IntoElement {
     Button::new("application-menu")
         .ghost()
-        .small()
+        .with_size(Size::Medium)
         .icon(IconName::Menu)
         .tooltip("Application menu")
         .accessibility_label("Application menu")
         .dropdown_menu(move |menu, window, cx| {
-            let items = cx
-                .get_menus()
-                .unwrap_or_default()
+            // Terminal backends do not retain native menus.
+            let items = crate::actions::application_menus()
                 .into_iter()
-                .map(OwnedMenuItem::Submenu);
+                .map(|menu| OwnedMenuItem::Submenu(menu.owned()));
 
             items.fold(menu.action_context(action_focus.clone()), |menu, item| {
                 append_application_menu_item(menu, item, window, cx)
@@ -343,5 +417,5 @@ fn render_app_group(shell_focus: FocusHandle) -> ToolbarGroup {
 }
 
 fn group_separator() -> Separator {
-    Separator::vertical().h_4().mx_1()
+    Separator::vertical().h_5().mx_1()
 }

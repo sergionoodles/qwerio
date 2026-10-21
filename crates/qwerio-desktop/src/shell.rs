@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use gpui_kit::assets::IconName as LucideIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogClose;
@@ -25,7 +26,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Action, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable,
+    Action, AnyElement, App, AppContext as _, Context, Div, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
     div, px,
@@ -148,7 +149,7 @@ pub struct WorkspaceShell {
 
 impl WorkspaceShell {
     pub fn new(model: Entity<WorkspaceModel>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let entry_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter items"));
+        let entry_filter = cx.new(|cx| InputState::new(window, cx).placeholder("Search"));
         let palette = cx.new(|cx| CommandState::new(window, cx));
 
         let subscriptions = vec![
@@ -656,22 +657,36 @@ impl WorkspaceShell {
     }
 
     fn cycle_tab(&mut self, step: isize, window: &mut Window, cx: &mut Context<Self>) {
-        let tabs = self.tabs.tabs();
-        let Some(position) = tabs
-            .iter()
-            .position(|tab| tab.id == self.tabs.focused_tab())
-        else {
+        let tabs: Vec<TabId> = self.tabs.top_level_tabs().map(|tab| tab.id).collect();
+        let Some(position) = tabs.iter().position(|id| *id == self.tabs.active()) else {
             return;
         };
 
         let next = (position as isize + step).rem_euclid(tabs.len() as isize) as usize;
-        let id = tabs[next].id;
-        self.activate_tab(id, window, cx);
+        self.activate_tab(tabs[next], window, cx);
     }
 
+    /// Closes a tab; a split tab closes its second pane first and stays open
+    /// when that pane refuses to close.
     fn close_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
-        self.leave_tab(id, window, cx, move |this, window, cx| {
-            this.close_tab_now(id, window, cx)
+        let companion = self
+            .tabs
+            .tab(id)
+            .and_then(|tab| tab.split)
+            .map(|split| split.tab);
+
+        let Some(companion) = companion else {
+            return self.leave_tab(id, window, cx, move |this, window, cx| {
+                this.close_tab_now(id, window, cx)
+            });
+        };
+
+        self.leave_tab(companion, window, cx, move |this, window, cx| {
+            this.close_tab_now(companion, window, cx);
+
+            if this.tabs.tab(companion).is_none() {
+                this.close_tab(id, window, cx);
+            }
         });
     }
 
@@ -710,21 +725,12 @@ impl WorkspaceShell {
     }
 
     fn toggle_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.tabs.split().is_some() {
-            self.tabs.unsplit();
-        } else {
-            let location = self.focused_location();
-            let other = self.tabs.open_tab(location);
-            self.tabs
-                .activate(self.tabs.tabs().first().map_or(other, |tab| tab.id));
-            let primary = self.tabs.active();
-            let secondary = if primary == other {
-                self.tabs.tabs()[0].id
-            } else {
-                other
-            };
-            self.tabs.split_with(secondary, SplitAxis::Horizontal);
+        if let Some(split) = self.tabs.split() {
+            return self.close_tab(split.tab, window, cx);
         }
+
+        let location = self.focused_location();
+        self.tabs.split_active(location, SplitAxis::Horizontal);
 
         self.sync_all(window, cx);
         self.after_navigation(window, cx);
@@ -1413,22 +1419,6 @@ impl WorkspaceShell {
             );
         }
 
-        let workspace_switcher = div()
-            .id("workspace-name")
-            .px_2()
-            .py_1()
-            .font_semibold()
-            .child(manifest.name.clone());
-
-        let root_place = self.render_place(
-            "place-root".into(),
-            Icon::new(IconName::FolderOpen),
-            manifest.name.clone().into(),
-            None,
-            Location::Root,
-            cx,
-        );
-
         let filters: Option<AnyElement> = match self.focused_content() {
             Some(TabContent::Explorer(_)) => Some(
                 Input::new(&self.entry_filter)
@@ -1454,29 +1444,36 @@ impl WorkspaceShell {
             .overflow_y_scroll()
             .p_2()
             .gap_3()
-            .child(workspace_switcher)
             .child(
                 v_flex()
                     .gap_0p5()
-                    .child(root_place)
                     .when(!favorite_places.is_empty(), |this| {
                         this.child(sidebar_heading("Favorites", cx))
                             .children(favorite_places)
                     })
-                    .child(sidebar_heading("Connections", cx))
-                    .children(connection_places)
                     .child(
-                        Button::new("add-connection")
-                            .ghost()
-                            .small()
-                            .w_full()
-                            .justify_start()
-                            .icon(IconName::Plus)
-                            .label("New Connection…")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                connection_dialog::open(this.model.clone(), None, window, cx);
-                            })),
-                    ),
+                        h_flex()
+                            .items_center()
+                            .justify_between()
+                            .pt_2()
+                            .child(sidebar_heading("Connections", cx).pt_0())
+                            .child(
+                                Button::new("add-connection")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(IconName::Plus)
+                                    .tooltip("New Connection")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        connection_dialog::open(
+                                            this.model.clone(),
+                                            None,
+                                            window,
+                                            cx,
+                                        );
+                                    })),
+                            ),
+                    )
+                    .children(connection_places),
             )
             .when_some(filters, |this, filters| {
                 this.child(
@@ -1488,21 +1485,23 @@ impl WorkspaceShell {
             })
     }
 
+    fn tab_title(&self, id: TabId, cx: &App) -> SharedString {
+        self.slots
+            .get(&id)
+            .map(|slot| slot.content.title(cx))
+            .unwrap_or_default()
+    }
+
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let tabs: Vec<(TabId, SharedString)> = self
+        let tabs: Vec<(TabId, SharedString, Option<SharedString>)> = self
             .tabs
-            .tabs()
-            .iter()
+            .top_level_tabs()
             .map(|tab| {
-                let title = self
-                    .slots
-                    .get(&tab.id)
-                    .map(|slot| slot.content.title(cx))
-                    .unwrap_or_default();
-                (tab.id, title)
+                let companion_title = tab.split.map(|split| self.tab_title(split.tab, cx));
+                (tab.id, self.tab_title(tab.id, cx), companion_title)
             })
             .collect();
-        let ids: Vec<TabId> = tabs.iter().map(|(id, _)| *id).collect();
+        let ids: Vec<TabId> = tabs.iter().map(|(id, _, _)| *id).collect();
         let selected = ids
             .iter()
             .position(|id| *id == self.tabs.active())
@@ -1513,12 +1512,29 @@ impl WorkspaceShell {
             .selected_index(selected)
             .on_click(cx.listener(move |this, index: &usize, window, cx| {
                 if let Some(id) = ids.get(*index) {
-                    this.tabs.focus(Pane::Primary);
                     this.activate_tab(*id, window, cx);
                 }
             }))
-            .children(tabs.into_iter().map(|(id, title)| {
-                Tab::new().label(title).suffix(
+            .children(tabs.into_iter().map(|(id, title, companion_title)| {
+                let tab = match companion_title {
+                    None => Tab::new().label(title),
+                    Some(companion_title) => Tab::new()
+                        .aria_label(format!("{title} and {companion_title}"))
+                        .child(
+                            h_flex()
+                                .gap_1p5()
+                                .items_center()
+                                .child(title)
+                                .child(
+                                    Icon::new(LucideIcon::ArrowLeftRight)
+                                        .xsmall()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                                .child(companion_title),
+                        ),
+                };
+
+                tab.suffix(
                     Button::new(SharedString::from(format!("close-tab-{}", id.get())))
                         .ghost()
                         .xsmall()
@@ -1529,32 +1545,6 @@ impl WorkspaceShell {
                         ),
                 )
             }))
-            .suffix(
-                h_flex()
-                    .gap_1()
-                    .child(
-                        Button::new("new-tab")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Plus)
-                            .tooltip("New tab")
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                let location = this.focused_location();
-                                this.navigate(location, ViewState::default(), true, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("split")
-                            .ghost()
-                            .xsmall()
-                            .icon(Icon::new(gpui_kit::assets::IconName::Split))
-                            .tooltip("Split")
-                            .toggled(self.tabs.split().is_some())
-                            .on_click(
-                                cx.listener(|this, _, window, cx| this.toggle_split(window, cx)),
-                            ),
-                    ),
-            )
     }
 
     fn render_pane(&self, tab: TabId, pane: Pane, cx: &mut Context<Self>) -> AnyElement {
@@ -1585,45 +1575,16 @@ impl WorkspaceShell {
     fn render_content(&self, cx: &mut Context<Self>) -> AnyElement {
         let primary = self.render_pane(self.tabs.active(), Pane::Primary, cx);
 
-        match self.tabs.split() {
-            None => primary,
-            Some(split) => {
-                let secondary_pane = self.render_pane(split.tab, Pane::Secondary, cx);
-                let title = self
-                    .slots
-                    .get(&split.tab)
-                    .map(|slot| slot.content.title(cx))
-                    .unwrap_or_default();
-                let secondary = v_flex()
-                    .size_full()
-                    .child(
-                        h_flex()
-                            .px_2()
-                            .h_8()
-                            .gap_2()
-                            .border_b_1()
-                            .border_color(cx.theme().border)
-                            .bg(cx.theme().tab_bar)
-                            .child(div().flex_1().truncate().text_sm().child(title))
-                            .child(
-                                Button::new("close-split")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(IconName::Close)
-                                    .tooltip("Close split")
-                                    .on_click(cx.listener(|this, _, window, cx| {
-                                        this.toggle_split(window, cx)
-                                    })),
-                            ),
-                    )
-                    .child(div().flex_1().min_h_0().child(secondary_pane));
+        let Some(split) = self.tabs.split() else {
+            return primary;
+        };
 
-                h_resizable("content-split")
-                    .child(resizable_panel().child(primary))
-                    .child(resizable_panel().child(secondary))
-                    .into_any_element()
-            }
-        }
+        let secondary = self.render_pane(split.tab, Pane::Secondary, cx);
+
+        h_resizable("content-split")
+            .child(resizable_panel().child(primary))
+            .child(resizable_panel().child(secondary))
+            .into_any_element()
     }
 
     fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1701,11 +1662,11 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
     ]
 }
 
-fn sidebar_heading(text: &'static str, cx: &App) -> impl IntoElement {
+fn sidebar_heading(text: &'static str, cx: &App) -> Div {
     div()
         .pt_2()
         .px_2()
-        .text_xs()
+        .text_sm()
         .font_semibold()
         .text_color(cx.theme().muted_foreground)
         .child(text)
@@ -1767,10 +1728,25 @@ impl Focusable for WorkspaceShell {
 impl Render for WorkspaceShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let show_sidebar = self.is_sidebar_visible(window);
+        // The first tab always draws a left border (TabBar offers no way to drop it), which
+        // doubles up with the window edge when nothing sits to its left: shift it out of view.
+        let has_tab_bar =
+            self.tabs.top_level_tabs().nth(1).is_some() || self.tabs.split().is_some();
+        let tab_bar = has_tab_bar.then(|| {
+            h_flex().overflow_hidden().child(
+                div()
+                    .id("tab-bar")
+                    .flex_1()
+                    .min_w_0()
+                    .when(!show_sidebar, |this| this.ml(px(-1.)))
+                    .child(self.render_tab_bar(cx))
+                    .test_support(),
+            )
+        });
         let content = v_flex()
             .size_full()
             .min_w_0()
-            .child(self.render_tab_bar(cx))
+            .children(tab_bar)
             .child(div().flex_1().min_h_0().child(self.render_content(cx)));
 
         let body = if show_sidebar {

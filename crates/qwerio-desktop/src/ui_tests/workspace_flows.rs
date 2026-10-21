@@ -152,12 +152,19 @@ fn navigates_back_and_forward_and_splits_the_view(cx: &mut TestAppContext) {
     );
 
     interact(window, cx, |window, cx| window.click("split", cx));
-    wait_until(window, cx, "a split opens", |window, _| {
-        window.try_find("close-split").is_some()
-    });
-    interact(window, cx, |window, cx| window.click("close-split", cx));
+    wait_until(
+        window,
+        cx,
+        "a split opens in one shared tab",
+        |window, _| {
+            window.try_find("tab-bar").is_some()
+                && window.try_find("close-tab-0").is_some()
+                && window.try_find("close-tab-1").is_none()
+        },
+    );
+    interact(window, cx, |window, cx| window.click("split", cx));
     wait_until(window, cx, "the split closes", |window, _| {
-        window.try_find("close-split").is_none()
+        window.try_find("tab-bar").is_none()
     });
 }
 
@@ -241,4 +248,55 @@ fn first_run_can_encrypt_the_default_and_unlock_it_on_reopen(cx: &mut TestAppCon
         window.try_find("workspace-password").is_none()
             && label_of(window, "place-root").as_deref() == Some("Default")
     });
+}
+
+#[gpui_kit::test]
+fn shows_the_tab_bar_only_with_more_than_one_tab(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    init_app(fixture.services.clone(), cx);
+    let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
+    wait_until(window, cx, "the workspace opens", |window, _| {
+        window.try_find(fixture.connection_key.clone()).is_some()
+    });
+    interact(window, cx, |window, _| {
+        assert!(window.try_find("tab-bar").is_none());
+    });
+
+    interact(window, cx, |window, cx| window.click("new-tab", cx));
+    wait_until(window, cx, "the tab bar shows", |window, _| {
+        window.try_find("tab-bar").is_some()
+    });
+
+    interact(window, cx, |window, cx| {
+        window.dispatch_action(Box::new(crate::actions::CloseTab), cx)
+    });
+    wait_until(window, cx, "the tab bar hides", |window, _| {
+        window.try_find("tab-bar").is_none()
+    });
+}
+
+#[gpui_kit::test]
+fn hides_the_first_tab_border_at_the_window_edge_without_a_sidebar(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    init_app(fixture.services.clone(), cx);
+    let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
+    wait_until(window, cx, "the workspace opens", |window, _| {
+        window.try_find(fixture.connection_key.clone()).is_some()
+    });
+    interact(window, cx, |window, cx| window.click("new-tab", cx));
+    wait_until(window, cx, "the tab bar", |window, _| {
+        window.try_find("tab-bar").is_some()
+    });
+    interact(window, cx, |window, _| {
+        assert!(window.find("tab-bar").bounds().left() > px(0.));
+    });
+
+    interact(window, cx, |window, cx| window.click("toggle-sidebar", cx));
+
+    wait_until(
+        window,
+        cx,
+        "the tab bar pushed past the window edge",
+        |window, _| window.find("tab-bar").bounds().left() < px(0.),
+    );
 }

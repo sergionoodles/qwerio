@@ -1,4 +1,4 @@
-//! Tabs, each with its own history, and one optional split.
+//! Tabs, each with its own history and an optional split.
 
 use qwerio_workspace::explorer::Location;
 use serde::{Deserialize, Serialize};
@@ -18,6 +18,8 @@ impl TabId {
 pub struct Tab {
     pub id: TabId,
     pub history: NavigationHistory,
+    /// The second pane of this tab, if it is split.
+    pub split: Option<Split>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,19 +34,19 @@ pub enum Pane {
     Secondary,
 }
 
-/// The second pane shows one other tab.
+/// The second pane of a tab shows a companion tab: it has its own history
+/// but never appears in the tab bar on its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Split {
     pub tab: TabId,
     pub axis: SplitAxis,
 }
 
-/// Tabs of the main area. Always holds at least one tab.
+/// Tabs of the main area. Always holds at least one top-level tab.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TabSet {
     tabs: Vec<Tab>,
     active: TabId,
-    split: Option<Split>,
     focused: Pane,
     next_id: u64,
 }
@@ -57,24 +59,33 @@ impl TabSet {
             tabs: vec![Tab {
                 id: first,
                 history: NavigationHistory::new(location),
+                split: None,
             }],
             active: first,
-            split: None,
             focused: Pane::Primary,
             next_id: 1,
         }
     }
 
+    /// Every tab, companions included.
     pub fn tabs(&self) -> &[Tab] {
         &self.tabs
+    }
+
+    /// The tabs shown in the tab bar: everything but split companions.
+    pub fn top_level_tabs(&self) -> impl Iterator<Item = &Tab> {
+        self.tabs
+            .iter()
+            .filter(|tab| self.owner_of(tab.id).is_none())
     }
 
     pub fn active(&self) -> TabId {
         self.active
     }
 
+    /// The split of the active tab.
     pub fn split(&self) -> Option<Split> {
-        self.split
+        self.tab(self.active).and_then(|tab| tab.split)
     }
 
     pub fn focused_pane(&self) -> Pane {
@@ -83,7 +94,7 @@ impl TabSet {
 
     /// The tab that receives navigation: the focused pane's tab.
     pub fn focused_tab(&self) -> TabId {
-        match (self.focused, self.split) {
+        match (self.focused, self.split()) {
             (Pane::Secondary, Some(split)) => split.tab,
             _ => self.active,
         }
@@ -97,6 +108,14 @@ impl TabSet {
         self.tabs.iter_mut().find(|tab| tab.id == id)
     }
 
+    /// The tab whose second pane shows `id`.
+    fn owner_of(&self, id: TabId) -> Option<TabId> {
+        self.tabs
+            .iter()
+            .find(|tab| tab.split.is_some_and(|split| split.tab == id))
+            .map(|tab| tab.id)
+    }
+
     pub fn focused_history_mut(&mut self) -> &mut NavigationHistory {
         let focused = self.focused_tab();
         let index = self
@@ -108,16 +127,14 @@ impl TabSet {
         &mut self.tabs[index].history
     }
 
-    /// Opens a new tab after the focused one and focuses it.
-    pub fn open_tab(&mut self, location: Location) -> TabId {
+    fn insert_tab(&mut self, after: TabId, location: Location) -> TabId {
         let id = TabId(self.next_id);
         self.next_id += 1;
 
-        let focused = self.focused_tab();
         let insert_at = self
             .tabs
             .iter()
-            .position(|tab| tab.id == focused)
+            .position(|tab| tab.id == after)
             .map_or(self.tabs.len(), |index| index + 1);
 
         self.tabs.insert(
@@ -125,88 +142,108 @@ impl TabSet {
             Tab {
                 id,
                 history: NavigationHistory::new(location),
+                split: None,
             },
         );
-        self.show_in_focused_pane(id);
         id
     }
 
-    fn show_in_focused_pane(&mut self, id: TabId) {
-        match (self.focused, &mut self.split) {
-            (Pane::Secondary, Some(split)) => split.tab = id,
-            _ => self.active = id,
-        }
-
-        self.drop_redundant_split();
+    /// Opens a new tab after the active one and activates it.
+    pub fn open_tab(&mut self, location: Location) -> TabId {
+        let id = self.insert_tab(self.active, location);
+        self.activate(id);
+        id
     }
 
+    /// Shows a tab. Activating a companion shows its owner with the second
+    /// pane focused.
     pub fn activate(&mut self, id: TabId) {
+        if let Some(owner) = self.owner_of(id) {
+            self.active = owner;
+            self.focused = Pane::Secondary;
+            return;
+        }
+
         if self.tab(id).is_some() {
-            self.show_in_focused_pane(id);
+            self.active = id;
+            self.focused = Pane::Primary;
         }
     }
 
     pub fn focus(&mut self, pane: Pane) {
-        if pane == Pane::Primary || self.split.is_some() {
+        if pane == Pane::Primary || self.split().is_some() {
             self.focused = pane;
         }
     }
 
-    /// Closes a tab. The last tab cannot be closed; it is reset instead.
+    /// Closes a tab. Closing a companion removes its owner's split; closing
+    /// an owner closes its companion too. The last top-level tab cannot be
+    /// closed; it is reset instead.
     pub fn close(&mut self, id: TabId, fallback: Location) {
-        let Some(index) = self.tabs.iter().position(|tab| tab.id == id) else {
-            return;
-        };
-
-        if self.tabs.len() == 1 {
-            self.tabs[0].history = NavigationHistory::new(fallback);
-            self.split = None;
-            self.focused = Pane::Primary;
+        if let Some(owner) = self.owner_of(id) {
+            self.remove_split(owner);
             return;
         }
 
-        self.tabs.remove(index);
-        let neighbor = self.tabs[index.min(self.tabs.len() - 1)].id;
-
-        if self.split.is_some_and(|split| split.tab == id) {
-            self.split = None;
-            self.focused = Pane::Primary;
-        }
-
-        if self.active == id {
-            self.active = neighbor;
-        }
-
-        self.drop_redundant_split();
-    }
-
-    /// Shows `id` in the second pane, or toggles the split off when `id` is
-    /// already there.
-    pub fn split_with(&mut self, id: TabId, axis: SplitAxis) {
         if self.tab(id).is_none() {
             return;
         }
 
-        if self.split.is_some_and(|split| split.tab == id) {
-            self.unsplit();
+        self.remove_split(id);
+
+        if self.top_level_tabs().count() == 1 {
+            if let Some(tab) = self.tab_mut(id) {
+                tab.history = NavigationHistory::new(fallback);
+            }
+            self.focused = Pane::Primary;
             return;
         }
 
-        self.split = Some(Split { tab: id, axis });
-        self.focused = Pane::Secondary;
-        self.drop_redundant_split();
-    }
+        let index = self
+            .tabs
+            .iter()
+            .position(|tab| tab.id == id)
+            .unwrap_or_default();
+        self.tabs.remove(index);
 
-    pub fn unsplit(&mut self) {
-        self.split = None;
-        self.focused = Pane::Primary;
-    }
-
-    /// Both panes cannot show the same tab.
-    fn drop_redundant_split(&mut self) {
-        if self.split.is_some_and(|split| split.tab == self.active) {
-            self.unsplit();
+        if self.active == id {
+            let neighbor = self.tabs[index.min(self.tabs.len() - 1)].id;
+            self.activate(neighbor);
+            self.focused = Pane::Primary;
         }
+    }
+
+    fn remove_split(&mut self, owner: TabId) {
+        let Some(split) = self.tab_mut(owner).and_then(|tab| tab.split.take()) else {
+            return;
+        };
+
+        self.tabs.retain(|tab| tab.id != split.tab);
+
+        if self.active == owner {
+            self.focused = Pane::Primary;
+        }
+    }
+
+    /// Splits the active tab, showing `location` in its second pane, and
+    /// focuses that pane. Does nothing when the active tab is already split.
+    pub fn split_active(&mut self, location: Location, axis: SplitAxis) -> Option<TabId> {
+        if self.split().is_some() {
+            return None;
+        }
+
+        let owner = self.active;
+        let companion = self.insert_tab(owner, location);
+
+        if let Some(tab) = self.tab_mut(owner) {
+            tab.split = Some(Split {
+                tab: companion,
+                axis,
+            });
+        }
+
+        self.focused = Pane::Secondary;
+        Some(companion)
     }
 
     /// Removes history entries and tabs for locations that no longer exist.
@@ -255,18 +292,23 @@ mod tests {
         assert_eq!(tabs.tabs().len(), 1);
     }
 
-    #[test]
-    fn split_shows_another_tab_and_routes_navigation_to_the_focused_pane() {
-        let mut tabs = TabSet::new(Location::Root);
-        let other = tabs.open_tab(folder());
-        tabs.activate(TabId(0));
-        tabs.split_with(other, SplitAxis::Horizontal);
+    fn top_level_ids(tabs: &TabSet) -> Vec<TabId> {
+        tabs.top_level_tabs().map(|tab| tab.id).collect()
+    }
 
-        assert_eq!(tabs.focused_tab(), other);
+    #[test]
+    fn a_split_lives_inside_its_tab_and_routes_navigation_to_the_focused_pane() {
+        let mut tabs = TabSet::new(Location::Root);
+        let companion = tabs
+            .split_active(folder(), SplitAxis::Horizontal)
+            .expect("split");
+
+        assert_eq!(top_level_ids(&tabs), vec![TabId(0)]);
+        assert_eq!(tabs.focused_tab(), companion);
         let target = folder();
         tabs.focused_history_mut().visit(target.clone());
         assert_eq!(
-            tabs.tab(other).map(|tab| tab.history.location()),
+            tabs.tab(companion).map(|tab| tab.history.location()),
             Some(&target)
         );
 
@@ -275,30 +317,48 @@ mod tests {
     }
 
     #[test]
-    fn closing_the_split_tab_removes_the_split() {
+    fn switching_tabs_hides_the_split_until_its_tab_returns() {
         let mut tabs = TabSet::new(Location::Root);
+        let companion = tabs
+            .split_active(folder(), SplitAxis::Horizontal)
+            .expect("split");
         let other = tabs.open_tab(folder());
-        tabs.activate(TabId(0));
-        tabs.split_with(other, SplitAxis::Vertical);
-
-        tabs.close(other, Location::Root);
 
         assert_eq!(tabs.split(), None);
+        assert_eq!(tabs.focused_tab(), other);
+
+        tabs.activate(TabId(0));
+        assert_eq!(tabs.split().map(|split| split.tab), Some(companion));
         assert_eq!(tabs.focused_pane(), Pane::Primary);
     }
 
     #[test]
-    fn a_tab_is_never_shown_in_both_panes() {
+    fn closing_the_companion_removes_the_split() {
         let mut tabs = TabSet::new(Location::Root);
-        let other = tabs.open_tab(folder());
-        tabs.activate(TabId(0));
-        tabs.split_with(other, SplitAxis::Vertical);
-        tabs.focus(Pane::Primary);
+        let companion = tabs
+            .split_active(folder(), SplitAxis::Vertical)
+            .expect("split");
 
-        tabs.activate(other);
+        tabs.close(companion, Location::Root);
 
         assert_eq!(tabs.split(), None);
-        assert_eq!(tabs.active(), other);
+        assert_eq!(tabs.focused_pane(), Pane::Primary);
+        assert!(tabs.tab(companion).is_none());
+    }
+
+    #[test]
+    fn closing_a_split_tab_closes_both_panes() {
+        let mut tabs = TabSet::new(Location::Root);
+        let other = tabs.open_tab(folder());
+        let companion = tabs
+            .split_active(folder(), SplitAxis::Vertical)
+            .expect("split");
+
+        tabs.close(other, Location::Root);
+
+        assert_eq!(top_level_ids(&tabs), vec![TabId(0)]);
+        assert!(tabs.tab(companion).is_none());
+        assert_eq!(tabs.active(), TabId(0));
     }
 
     #[test]

@@ -123,7 +123,12 @@ pub fn bind_keys(cx: &mut App) {
 /// Native application menus (used where the platform provides a menu bar).
 /// Call after [`bind_keys`] so shortcuts appear next to items.
 pub fn set_menus(cx: &mut App) {
-    cx.set_menus(vec![
+    cx.set_menus(application_menus());
+}
+
+/// Shared by native menu bars and the in-window application menu.
+pub fn application_menus() -> Vec<Menu> {
+    vec![
         Menu {
             name: "Qwerio".into(),
             items: vec![
@@ -194,5 +199,5 @@ pub fn set_menus(cx: &mut App) {
             ],
             disabled: false,
         },
-    ]);
+    ]
 }
