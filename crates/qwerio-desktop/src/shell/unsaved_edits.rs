@@ -12,6 +12,7 @@ use qwerio_app::tabs::TabId;
 
 use super::{TabContent, WorkspaceShell};
 use crate::table_view::TableView;
+use crate::theme::glass;
 
 const DIALOG_WIDTH: f32 = 440.;
 
@@ -55,7 +56,7 @@ impl WorkspaceShell {
         let proceed: Rc<RefCell<Option<Proceed>>> = Rc::new(RefCell::new(Some(Box::new(proceed))));
         let this = cx.entity().downgrade();
 
-        window.open_dialog(cx, move |dialog, _, _| {
+        glass::open_dialog(window, cx, move |dialog, _, _| {
             let discard = {
                 let (this, table, proceed) = (this.clone(), table.clone(), Rc::clone(&proceed));
                 move |_: &_, window: &mut Window, cx: &mut App| {

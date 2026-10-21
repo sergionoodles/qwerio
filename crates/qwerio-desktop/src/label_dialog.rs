@@ -1,4 +1,5 @@
 //! Assign workspace labels to a connection, object, document, or folder.
+use crate::theme::glass;
 use crate::workspace_model::WorkspaceModel;
 use gpui_kit::component::button::Button;
 use gpui_kit::component::dialog::DialogClose;
@@ -19,7 +20,7 @@ pub fn open(model: Entity<WorkspaceModel>, target: LabelTarget, window: &mut Win
             _subscription: subscription,
         }
     });
-    window.open_dialog(cx, move |dialog, _, _| {
+    glass::open_dialog(window, cx, move |dialog, _, _| {
         dialog
             .title("Labels")
             .w(px(360.))

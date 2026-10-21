@@ -1,17 +1,22 @@
 //! The Settings dialog and theme preferences.
 
-use gpui_kit::TestAppContext;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{TestAppContext, point};
 use tempfile::TempDir;
 
 use super::*;
+use crate::theme::glass::{FROSTED_GLASS_SETTING, FROSTED_GLASS_SHADE_SETTING, MAX_SHADE};
 use crate::theme::omarchy::{OMARCHY_THEME_NAME, PALETTE_FILE};
-use crate::theme::{LIGHT_THEMES, OMARCHY_DIRECTORY_SETTING, THEME_SETTING, ThemePreference};
+use crate::theme::{
+    DARK_THEMES, LIGHT_THEMES, OMARCHY_DIRECTORY_SETTING, THEME_SETTING, ThemePreference,
+};
 use crate::workbench::FONT_SIZE_SETTING;
 
-/// Steps from System down to Tokyo Night: every light theme, then it.
-const STEPS_TO_TOKYO_NIGHT: usize = LIGHT_THEMES.len() + 1;
+/// The first dark theme in the picker, and the steps from System down to it:
+/// every light theme, then it.
+const FIRST_DARK_THEME: ThemePreference = DARK_THEMES[0];
+const STEPS_TO_FIRST_DARK_THEME: usize = LIGHT_THEMES.len() + 1;
 const SAVED_FONT_SIZE: f32 = 18.;
 
 fn save_setting(fixture: &Fixture, key: &str, value: &impl serde::Serialize) {
@@ -69,15 +74,15 @@ fn choosing_a_theme_applies_and_saves_it(cx: &mut TestAppContext) {
         assert_eq!(window.find("settings-theme").value(), Some("System"));
     });
 
-    choose_option(window, cx, "settings-theme", STEPS_TO_TOKYO_NIGHT);
-    wait_for_theme(window, cx, "Tokyo Night");
+    choose_option(window, cx, "settings-theme", STEPS_TO_FIRST_DARK_THEME);
+    wait_for_theme(window, cx, FIRST_DARK_THEME.label());
 
     let saved: Option<ThemePreference> = fixture
         .services
         .local_state
         .setting(THEME_SETTING)
         .expect("read setting");
-    assert_eq!(saved, Some(ThemePreference::TokyoNight));
+    assert_eq!(saved, Some(FIRST_DARK_THEME));
 
     interact(window, cx, |window, cx| {
         assert!(cx.theme().is_dark());
@@ -89,7 +94,10 @@ fn choosing_a_theme_applies_and_saves_it(cx: &mut TestAppContext) {
 
     open_settings(window, cx);
     interact(window, cx, |window, _| {
-        assert_eq!(window.find("settings-theme").value(), Some("Tokyo Night"));
+        assert_eq!(
+            window.find("settings-theme").value(),
+            Some(FIRST_DARK_THEME.label())
+        );
     });
 }
 
@@ -136,8 +144,8 @@ fn changing_the_theme_keeps_the_text_size(cx: &mut TestAppContext) {
     });
 
     open_settings(window, cx);
-    choose_option(window, cx, "settings-theme", STEPS_TO_TOKYO_NIGHT);
-    wait_for_theme(window, cx, "Tokyo Night");
+    choose_option(window, cx, "settings-theme", STEPS_TO_FIRST_DARK_THEME);
+    wait_for_theme(window, cx, FIRST_DARK_THEME.label());
 
     interact(window, cx, |_, cx| {
         assert_eq!(cx.theme().font_size, px(SAVED_FONT_SIZE));
@@ -160,8 +168,8 @@ fn a_theme_save_failure_is_visible_and_a_later_save_can_recover(cx: &mut TestApp
     connection.execute_batch("CREATE TRIGGER reject_settings BEFORE INSERT ON settings BEGIN SELECT RAISE(ABORT, 'test preference write failure'); END;").expect("reject preference writes");
     let window = open_workspace(&fixture, cx);
     open_settings(window, cx);
-    choose_option(window, cx, "settings-theme", STEPS_TO_TOKYO_NIGHT);
-    wait_for_theme(window, cx, "Tokyo Night");
+    choose_option(window, cx, "settings-theme", STEPS_TO_FIRST_DARK_THEME);
+    wait_for_theme(window, cx, FIRST_DARK_THEME.label());
     wait_until(window, cx, "theme save error", |window, _| {
         window.try_find("settings-theme-error").is_some()
     });
@@ -251,4 +259,106 @@ fn adding_a_global_label_does_not_copy_private_workspace_definitions(cx: &mut Te
         .expect("setting")
         .expect("saved labels");
     assert!(!labels.contains(&"workspace-only secret label".into()));
+}
+
+fn is_see_through(cx: &App) -> bool {
+    cx.theme().background.a < 1.
+}
+
+fn saved_frosted_glass(fixture: &Fixture) -> Option<bool> {
+    fixture
+        .services
+        .local_state
+        .setting(FROSTED_GLASS_SETTING)
+        .expect("read setting")
+}
+
+#[gpui_kit::test]
+fn frosted_glass_is_off_until_turned_on_and_is_saved(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let window = open_workspace(&fixture, cx);
+    open_settings(window, cx);
+    let opaque_background = interact(window, cx, |_, cx| cx.theme().background);
+    assert_eq!(opaque_background.a, 1.);
+
+    interact(window, cx, |window, cx| {
+        window.click("settings-frosted-glass", cx)
+    });
+    wait_until(window, cx, "the window turns see-through", |_, cx| {
+        is_see_through(cx)
+    });
+    assert_eq!(saved_frosted_glass(&fixture), Some(true));
+    interact(window, cx, |_, cx| {
+        let background = cx.theme().background;
+        assert_eq!(
+            (background.h, background.s),
+            (opaque_background.h, opaque_background.s)
+        );
+    });
+
+    interact(window, cx, |window, cx| {
+        window.click("settings-frosted-glass", cx)
+    });
+    wait_until(window, cx, "the window turns opaque", |_, cx| {
+        cx.theme().background == opaque_background
+    });
+    assert_eq!(saved_frosted_glass(&fixture), Some(false));
+}
+
+#[gpui_kit::test]
+fn saved_frosted_glass_applies_on_start_and_follows_theme_changes(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    save_setting(&fixture, FROSTED_GLASS_SETTING, &true);
+
+    let window = open_workspace(&fixture, cx);
+    wait_until(window, cx, "the saved frosted glass is shown", |_, cx| {
+        is_see_through(cx)
+    });
+
+    open_settings(window, cx);
+    choose_option(window, cx, "settings-theme", STEPS_TO_FIRST_DARK_THEME);
+    wait_for_theme(window, cx, FIRST_DARK_THEME.label());
+    interact(window, cx, |_, cx| assert!(is_see_through(cx)));
+}
+
+#[gpui_kit::test]
+fn the_shade_slider_shows_with_a_transparent_background_and_is_saved(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    save_setting(&fixture, THEME_SETTING, &FIRST_DARK_THEME);
+    let window = open_workspace(&fixture, cx);
+    wait_for_theme(window, cx, FIRST_DARK_THEME.label());
+    open_settings(window, cx);
+    interact(window, cx, |window, _| {
+        assert!(window.try_find("settings-frosted-glass-shade").is_none());
+    });
+
+    interact(window, cx, |window, cx| {
+        window.click("settings-frosted-glass", cx)
+    });
+    wait_until(window, cx, "the shade slider shows", |window, _| {
+        window.try_find("settings-frosted-glass-shade").is_some()
+    });
+    let default_background = interact(window, cx, |_, cx| cx.theme().background);
+
+    interact(window, cx, |window, cx| {
+        let size = window.find("settings-frosted-glass-shade").bounds().size;
+        let far_end = point(size.width - px(1.), size.height / 2.);
+        window.click_at("settings-frosted-glass-shade", far_end, cx);
+    });
+    wait_until(window, cx, "the background darkens", |_, cx| {
+        cx.theme().background.l < default_background.l
+    });
+    let saved_shade: Option<f32> = fixture
+        .services
+        .local_state
+        .setting(FROSTED_GLASS_SHADE_SETTING)
+        .expect("read setting");
+    assert!(saved_shade.is_some_and(|shade| shade > MAX_SHADE * 0.9));
+
+    interact(window, cx, |window, cx| {
+        window.click("settings-frosted-glass", cx)
+    });
+    wait_until(window, cx, "the shade slider hides", |window, _| {
+        window.try_find("settings-frosted-glass-shade").is_none()
+    });
 }

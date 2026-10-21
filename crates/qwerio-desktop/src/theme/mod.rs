@@ -8,6 +8,7 @@
 //! the rest of the desktop.
 
 pub mod controller;
+pub mod glass;
 pub mod omarchy;
 
 use notify::{RecommendedWatcher, RecursiveMode, Watcher as _};
@@ -21,6 +22,8 @@ use gpui_kit::component::highlighter::HighlightTheme;
 use gpui_kit::component::{Theme, ThemeConfig, ThemeMode, ThemeRegistry, ThemeSet};
 use gpui_kit::{App, WindowAppearance};
 use serde::{Deserialize, Serialize};
+
+use glass::{FrostedGlass, OpaqueBackground};
 
 const QWERIO_THEMES: &str = include_str!("../../assets/themes/qwerio.json");
 const NAMED_THEMES: &str = include_str!("../../assets/themes/named.json");
@@ -50,20 +53,22 @@ pub enum ThemePreference {
     AyuMirage,
 }
 
+/// Light themes in the order the picker lists them: by name.
 pub const LIGHT_THEMES: [ThemePreference; 4] = [
+    ThemePreference::AyuLight,
+    ThemePreference::CatppuccinLatte,
     ThemePreference::GitHubLight,
     ThemePreference::SolarizedLight,
-    ThemePreference::CatppuccinLatte,
-    ThemePreference::AyuLight,
 ];
 
+/// Dark themes in the order the picker lists them: by name.
 pub const DARK_THEMES: [ThemePreference; 6] = [
-    ThemePreference::TokyoNight,
+    ThemePreference::AyuMirage,
     ThemePreference::CatppuccinMocha,
+    ThemePreference::Dracula,
     ThemePreference::GruvboxDark,
     ThemePreference::Nord,
-    ThemePreference::Dracula,
-    ThemePreference::AyuMirage,
+    ThemePreference::TokyoNight,
 ];
 
 impl ThemePreference {
@@ -167,19 +172,25 @@ pub fn init(cx: &mut App) {
     Theme::update(cx, |theme| install(theme, &config));
 }
 
-/// Shows `target` everywhere. Text sizes are kept, since people change them
-/// separately from the theme.
-pub fn apply(target: &ThemeTarget, cx: &mut App) {
+/// Shows `target` everywhere, see-through when `frosted_glass` is on. Text
+/// sizes are kept, since people change them separately from the theme.
+pub fn apply(target: &ThemeTarget, frosted_glass: FrostedGlass, cx: &mut App) {
     let config = config_for(target, cx);
 
-    Theme::update(cx, |theme| {
+    let opaque_background = Theme::update(cx, |theme| {
         let font_size = theme.font_size;
         let mono_font_size = theme.mono_font_size;
 
         install(theme, &config);
+        let opaque_background = theme.background;
+        if frosted_glass.is_on {
+            glass::apply_frosted_glass(theme, frosted_glass.shade);
+        }
         theme.font_size = font_size;
         theme.mono_font_size = mono_font_size;
+        opaque_background
     });
+    cx.set_global(OpaqueBackground(opaque_background));
 }
 
 fn config_for(target: &ThemeTarget, cx: &App) -> Rc<ThemeConfig> {
@@ -325,6 +336,17 @@ mod tests {
                 bundled.contains(&(name.to_owned(), mode)),
                 "{name} is not bundled as a {mode:?} theme"
             );
+        }
+    }
+
+    #[test]
+    fn named_themes_are_listed_by_name() {
+        for themes in [&LIGHT_THEMES[..], &DARK_THEMES[..]] {
+            let labels: Vec<&str> = themes.iter().map(|theme| theme.label()).collect();
+            let mut sorted = labels.clone();
+            sorted.sort_by_key(|label| label.to_lowercase());
+
+            assert_eq!(labels, sorted);
         }
     }
 
