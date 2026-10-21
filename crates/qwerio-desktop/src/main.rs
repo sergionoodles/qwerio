@@ -87,30 +87,29 @@ fn run() -> Result<(), String> {
         )),
     };
 
-    let initial_workspace = std::env::args_os().nth(1).map(PathBuf::from);
+    let (application, arguments) = platform::application::application(std::env::args_os())?;
+    let initial_workspace = arguments.into_iter().nth(1).map(PathBuf::from);
 
-    gpui_kit::application()
-        .with_assets(AppAssets)
-        .run(move |cx| {
-            gpui_kit::init(cx);
-            theme::init(cx);
-            actions::bind_keys(cx);
-            explorer_view::bind_keys(cx);
-            actions::set_menus(cx);
-            cx.set_global(services);
+    application.with_assets(AppAssets).run(move |cx| {
+        gpui_kit::init(cx);
+        theme::init(cx);
+        actions::bind_keys(cx);
+        explorer_view::bind_keys(cx);
+        actions::set_menus(cx);
+        cx.set_global(services);
 
-            cx.on_action(|_: &actions::Quit, cx| cx.quit());
+        cx.on_action(|_: &actions::Quit, cx| cx.quit());
 
-            let sessions = Arc::clone(&Services::app(cx).sessions);
-            cx.on_app_quit(move |_| {
-                let sessions = Arc::clone(&sessions);
-                async move { sessions.close_all().await }
-            })
-            .detach();
+        let sessions = Arc::clone(&Services::app(cx).sessions);
+        cx.on_app_quit(move |_| {
+            let sessions = Arc::clone(&sessions);
+            async move { sessions.close_all().await }
+        })
+        .detach();
 
-            workbench::open_window(initial_workspace, cx);
-            cx.activate(true);
-        });
+        workbench::open_window(initial_workspace, cx);
+        cx.activate(true);
+    });
 
     drop(runtime);
     Ok(())

@@ -189,3 +189,87 @@ fn adds_a_sqlite_connection_through_the_dialog(cx: &mut TestAppContext) {
         |window, _| label_of(window, key.clone()).as_deref() == Some(NEW_CONNECTION_NAME),
     );
 }
+
+#[gpui_kit::test]
+fn fills_the_form_from_a_pasted_connection_string(cx: &mut TestAppContext) {
+    const INVALID_URL: &str = "mysql://db/shop";
+    const POSTGRES_URL: &str = "DATABASE_URL=postgres://app:s3cret@db.example.com:6543/shop";
+    let fixture = Fixture::new();
+    init_app(fixture.services.clone(), cx);
+    let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
+    wait_until(window, cx, "the workspace root is listed", |window, _| {
+        label_of(window, "status").as_deref() == Some("2 items")
+    });
+
+    interact(window, cx, |window, cx| window.click("add-connection", cx));
+    wait_until(window, cx, "the dialog opens", |window, _| {
+        window.try_find("connection-string").is_some()
+    });
+    choose_option(window, cx, "connection-engine", POSTGRES_TO_SQLITE_STEPS);
+    interact(window, cx, |window, cx| {
+        window.click("connection-string", cx);
+        window.input(INVALID_URL, cx);
+    });
+    wait_until(
+        window,
+        cx,
+        "an unsupported scheme is reported",
+        |window, _| {
+            label_of(window, "connection-string-feedback")
+                .is_some_and(|label| label.contains("not supported"))
+        },
+    );
+
+    interact(window, cx, |window, cx| {
+        window.press("ctrl-a", cx);
+        window.input(POSTGRES_URL, cx);
+    });
+    wait_until(
+        window,
+        cx,
+        "the PostgreSQL fields are filled",
+        |window, _| {
+            window
+                .try_find("connection-host")
+                .is_some_and(|field| field.value() == Some("db.example.com"))
+        },
+    );
+    interact(window, cx, |window, _| {
+        assert_eq!(window.find("connection-port").value(), Some("6543"));
+        assert_eq!(window.find("connection-user").value(), Some("app"));
+        assert_eq!(window.find("connection-database").value(), Some("shop"));
+    });
+
+    let sqlite_url = format!("sqlite://{}", fixture.database.display());
+    interact(window, cx, |window, cx| {
+        window.click("connection-string", cx);
+        window.press("ctrl-a", cx);
+        window.input(&sqlite_url, cx);
+    });
+    let database = fixture.database.display().to_string();
+    wait_until(window, cx, "the SQLite file is filled", |window, _| {
+        window
+            .try_find("connection-file")
+            .is_some_and(|field| field.value() == Some(database.as_str()))
+    });
+    interact(window, cx, |window, cx| window.click("save-connection", cx));
+    wait_until(window, cx, "the dialog closes", |window, _| {
+        window.try_find("connection-name").is_none()
+    });
+
+    let workspace = Workspace::open(&fixture.root).expect("workspace");
+    let added = workspace
+        .manifest()
+        .connections
+        .iter()
+        .find(|connection| connection.name == NEW_CONNECTION_NAME)
+        .expect("the manifest lists the new connection");
+    let resolved = fixture
+        .services
+        .resolve_connection(workspace.manifest(), added.id)
+        .expect("saved connection");
+    let ConnectionOptions::Sqlite(options) = resolved.descriptor.options else {
+        panic!("the connection must be SQLite");
+    };
+    assert_eq!(options.path, fixture.database);
+}
