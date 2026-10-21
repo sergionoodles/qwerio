@@ -50,6 +50,18 @@ Working on Qwerio? Run `scripts/check.sh` for formatting, Clippy, and tests. The
 test helper starts a disposable local PostgreSQL server; it needs `initdb`,
 `pg_ctl`, and `openssl` on your `PATH`.
 
+## Running on a server over SSH
+
+Download and unpack the SSH package in your home directory on the server,
+replacing `X.Y.Z` with the release version:
+
+```sh
+curl -LO https://github.com/sergionoodles/qwerio/releases/download/vX.Y.Z/qwerio-linux-over-ssh-X.Y.Z-x86_64.tar.gz
+tar xzf qwerio-linux-over-ssh-*.tar.gz
+# then, from kitty or Ghostty on your machine:
+ssh -t <user>@<host> '~/qwerio-linux-over-ssh-X.Y.Z-x86_64/qwerio --tui'
+```
+
 ## License
 
 [MIT](LICENSE). Go make something useful. Or investigate `thing2`.
