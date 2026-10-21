@@ -141,7 +141,7 @@ impl SchemaForm {
 
     /// The statement that runs on Create, or what is still missing.
     fn render_preview(&self, cx: &App) -> impl IntoElement {
-        let (text, is_valid) = match self.change(cx).render() {
+        let (text, is_valid) = match self.change(cx).render_for_engine(self.engine) {
             Ok(sql) => (SharedString::from(sql), true),
             Err(error) => (SharedString::from(error.message), false),
         };

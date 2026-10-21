@@ -5,9 +5,9 @@
 //! statement is shown before it runs, and adapters reject anything that is
 //! not exactly one statement.
 
+use crate::connection::EngineKind;
 use crate::error::{DatabaseError, DbResult};
 use crate::resource::{CatalogPath, ObjectKind, ObjectRef};
-use crate::sql::quote_identifier_ansi;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ColumnDefinition {
@@ -38,22 +38,27 @@ pub enum SchemaChange {
 impl SchemaChange {
     /// The single statement that applies the change, or why it is incomplete.
     pub fn render(&self) -> DbResult<String> {
+        self.render_for_engine(EngineKind::Postgres)
+    }
+
+    pub fn render_for_engine(&self, engine: EngineKind) -> DbResult<String> {
         match self {
             Self::CreateDatabase { name } => {
                 require_name(name, "Enter a name for the database")?;
-                Ok(format!("CREATE DATABASE {}", quote_identifier_ansi(name)))
+                Ok(format!("CREATE DATABASE {}", engine.quote_identifier(name)))
             }
             Self::CreateTable {
                 container,
                 name,
                 columns,
-            } => render_create_table(container, name, columns),
-            Self::AddColumn { table, column } => render_add_column(table, column),
+            } => render_create_table(engine, container, name, columns),
+            Self::AddColumn { table, column } => render_add_column(engine, table, column),
         }
     }
 }
 
 fn render_create_table(
+    engine: EngineKind,
     container: &CatalogPath,
     name: &str,
     columns: &[ColumnDefinition],
@@ -88,25 +93,29 @@ fn render_create_table(
 
     let mut lines: Vec<String> = columns
         .iter()
-        .map(|column| column_sql(column, has_inline_key && column.is_primary_key))
+        .map(|column| column_sql(engine, column, has_inline_key && column.is_primary_key))
         .collect();
 
     if key_columns.len() > 1 {
         let names: Vec<String> = key_columns
             .iter()
-            .map(|column| quote_identifier_ansi(&column.name))
+            .map(|column| engine.quote_identifier(&column.name))
             .collect();
         lines.push(format!("PRIMARY KEY ({})", names.join(", ")));
     }
 
     Ok(format!(
         "CREATE TABLE {} (\n    {}\n)",
-        qualified_name(container.namespace.as_deref(), name),
+        qualified_name(engine, container.namespace.as_deref(), name),
         lines.join(",\n    ")
     ))
 }
 
-fn render_add_column(table: &ObjectRef, column: &ColumnDefinition) -> DbResult<String> {
+fn render_add_column(
+    engine: EngineKind,
+    table: &ObjectRef,
+    column: &ColumnDefinition,
+) -> DbResult<String> {
     if table.kind != ObjectKind::Table {
         return Err(DatabaseError::invalid_request(format!(
             "Columns can only be added to tables, and \"{}\" is a {}",
@@ -125,8 +134,8 @@ fn render_add_column(table: &ObjectRef, column: &ColumnDefinition) -> DbResult<S
 
     Ok(format!(
         "ALTER TABLE {} ADD COLUMN {}",
-        qualified_name(table.namespace.as_deref(), &table.name),
-        column_sql(column, false)
+        qualified_name(engine, table.namespace.as_deref(), &table.name),
+        column_sql(engine, column, false)
     ))
 }
 
@@ -151,10 +160,10 @@ fn require_name(name: &str, message: &str) -> DbResult<()> {
     Ok(())
 }
 
-fn column_sql(column: &ColumnDefinition, is_inline_key: bool) -> String {
+fn column_sql(engine: EngineKind, column: &ColumnDefinition, is_inline_key: bool) -> String {
     let mut sql = format!(
         "{} {}",
-        quote_identifier_ansi(&column.name),
+        engine.quote_identifier(&column.name),
         column.data_type.trim()
     );
 
@@ -176,14 +185,14 @@ fn column_sql(column: &ColumnDefinition, is_inline_key: bool) -> String {
     sql
 }
 
-fn qualified_name(namespace: Option<&str>, name: &str) -> String {
+fn qualified_name(engine: EngineKind, namespace: Option<&str>, name: &str) -> String {
     match namespace {
         Some(namespace) => format!(
             "{}.{}",
-            quote_identifier_ansi(namespace),
-            quote_identifier_ansi(name)
+            engine.quote_identifier(namespace),
+            engine.quote_identifier(name)
         ),
-        None => quote_identifier_ansi(name),
+        None => engine.quote_identifier(name),
     }
 }
 
@@ -237,6 +246,28 @@ mod tests {
         let error = change.render().expect_err("the change is incomplete");
         assert_eq!(error.kind, ErrorKind::InvalidRequest);
         error.message
+    }
+
+    #[test]
+    fn mysql_schema_names_use_backticks() {
+        let change = SchemaChange::CreateTable {
+            container: CatalogPath::database("shop"),
+            name: "Order`Lines".to_owned(),
+            columns: vec![key("id", "bigint AUTO_INCREMENT")],
+        };
+        for engine in [EngineKind::Mysql, EngineKind::Mariadb] {
+            let sql = change.render_for_engine(engine).expect("render");
+            assert!(sql.starts_with("CREATE TABLE `Order``Lines`"));
+            assert!(sql.contains("`id` bigint AUTO_INCREMENT NOT NULL PRIMARY KEY"));
+            assert_eq!(
+                SchemaChange::CreateDatabase {
+                    name: "odd`name".to_owned()
+                }
+                .render_for_engine(engine)
+                .expect("database"),
+                "CREATE DATABASE `odd``name`"
+            );
+        }
     }
 
     #[test]

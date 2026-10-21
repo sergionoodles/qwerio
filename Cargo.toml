@@ -13,6 +13,7 @@ publish = false
 
 [workspace.dependencies]
 qwerio-core = { path = "crates/qwerio-core" }
+qwerio-mysql = { path = "crates/qwerio-mysql" }
 qwerio-postgres = { path = "crates/qwerio-postgres" }
 qwerio-sqlite = { path = "crates/qwerio-sqlite" }
 qwerio-workspace = { path = "crates/qwerio-workspace" }

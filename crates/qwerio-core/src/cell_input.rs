@@ -26,7 +26,17 @@ pub enum CellEditor {
 
 /// Types a single-line text editor would corrupt or that need a special
 /// editor this release does not have.
-const READ_ONLY_TYPES: &[&str] = &["bytea", "blob"];
+const READ_ONLY_TYPES: &[&str] = &[
+    "bytea",
+    "blob",
+    "tinyblob",
+    "mediumblob",
+    "longblob",
+    "binary",
+    "varbinary",
+    "bit",
+    "geometry",
+];
 
 const INTEGER_TYPES: &[&str] = &[
     "integer",
@@ -67,6 +77,8 @@ pub fn cell_editor(column: &ColumnInfo) -> Option<CellEditor> {
 
     let editor = if base.starts_with("bool") {
         CellEditor::Boolean
+    } else if type_name.contains("unsigned") || type_name.contains("zerofill") {
+        CellEditor::Number
     } else if INTEGER_TYPES.contains(&base) {
         CellEditor::Integer
     } else if NUMBER_TYPES.contains(&base) {
@@ -303,6 +315,31 @@ mod tests {
             comment: None,
             decodable: true,
             generated: false,
+        }
+    }
+
+    #[test]
+    fn mysql_unsigned_keys_use_exact_numeric_input() {
+        for type_name in [
+            "bigint unsigned",
+            "bigint(20) unsigned",
+            "int unsigned",
+            "int zerofill",
+        ] {
+            assert_eq!(cell_editor(&column(type_name)), Some(CellEditor::Number));
+        }
+        assert_eq!(
+            parse_cell_input(CellEditor::Number, "18446744073709551615").expect("unsigned"),
+            Value::Decimal("18446744073709551615".to_owned())
+        );
+        for type_name in [
+            "tinyblob",
+            "mediumblob",
+            "longblob",
+            "varbinary(10)",
+            "bit(8)",
+        ] {
+            assert_eq!(cell_editor(&column(type_name)), None);
         }
     }
 

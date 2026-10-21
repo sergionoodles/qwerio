@@ -84,6 +84,7 @@ enum Fields {
 pub struct SchemaForm {
     model: Entity<WorkspaceModel>,
     connection: ConnectionId,
+    engine: qwerio_core::connection::EngineKind,
     fields: Fields,
     column_types: Vec<SharedString>,
     next_row_id: usize,
@@ -191,9 +192,16 @@ impl SchemaForm {
             },
         };
 
+        let engine = model
+            .read(cx)
+            .manifest()
+            .connection(connection)
+            .map(|alias| alias.engine)
+            .unwrap_or(qwerio_core::connection::EngineKind::Postgres);
         let mut form = Self {
             model,
             connection,
+            engine,
             fields,
             column_types: capabilities
                 .column_types
@@ -281,7 +289,7 @@ impl SchemaForm {
     }
 
     fn can_create(&self, cx: &App) -> bool {
-        !self.is_busy && self.change(cx).render().is_ok()
+        !self.is_busy && self.change(cx).render_for_engine(self.engine).is_ok()
     }
 
     fn create(&mut self, window: &mut Window, cx: &mut Context<Self>) {

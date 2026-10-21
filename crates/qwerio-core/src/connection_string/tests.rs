@@ -2,19 +2,8 @@ use super::*;
 
 fn postgres(input: &str) -> (PostgresOptions, Option<String>) {
     let parsed = parse_connection_string(input).expect("a valid connection string");
-    let ConnectionOptions::Postgres(options) = parsed.options else {
-        panic!("expected PostgreSQL options");
-    };
     let password = parsed.password.map(|secret| secret.expose().to_owned());
-    (options, password)
-}
-
-fn sqlite_path(input: &str) -> PathBuf {
-    let parsed = parse_connection_string(input).expect("a valid connection string");
-    let ConnectionOptions::Sqlite(options) = parsed.options else {
-        panic!("expected SQLite options");
-    };
-    options.path
+    (parsed.options, password)
 }
 
 #[test]
@@ -103,19 +92,6 @@ fn accepts_env_lines_and_jdbc_prefixes() {
 }
 
 #[test]
-fn reads_sqlite_file_paths() {
-    assert_eq!(
-        sqlite_path("sqlite:///data/app.db"),
-        PathBuf::from("/data/app.db")
-    );
-    assert_eq!(sqlite_path("sqlite:app.db"), PathBuf::from("app.db"));
-    assert_eq!(
-        sqlite_path("file:/data/my%20app.db?mode=ro"),
-        PathBuf::from("/data/my app.db")
-    );
-}
-
-#[test]
 fn rejects_strings_it_cannot_read() {
     let error = |input: &str| parse_connection_string(input).expect_err("an invalid string");
 
@@ -136,5 +112,49 @@ fn rejects_strings_it_cannot_read() {
         error("postgres://db/shop?sslmode=sometimes"),
         ConnectionStringError::UnsupportedSslMode("sometimes".to_owned())
     );
-    assert_eq!(error("sqlite://"), ConnectionStringError::MissingPath);
+    assert_eq!(
+        error("sqlite:///data/app.db"),
+        ConnectionStringError::UnsupportedScheme("sqlite".to_owned())
+    );
+}
+
+#[test]
+fn reads_mysql_and_mariadb_urls_without_postgres_defaults() {
+    for scheme in ["mysql", "mariadb"] {
+        let parsed = parse_mysql_connection_string(&format!(
+            "{scheme}://app:p%40ss@[::1]/shop?ssl-mode=VERIFY_IDENTITY"
+        ))
+        .expect("URL");
+        assert_eq!(parsed.options.host, "::1");
+        assert_eq!(parsed.options.port, 3306);
+        assert_eq!(parsed.options.database, "shop");
+        assert_eq!(parsed.password.as_ref().map(Secret::expose), Some("p@ss"));
+        assert_eq!(parsed.options.tls, TlsMode::VerifyFull { ca_file: None });
+    }
+    let parsed = parse_mysql_connection_string("mysql://root@localhost").expect("no database");
+    assert_eq!(parsed.options.database, "");
+    assert_eq!(parsed.options.tls, TlsMode::Disable);
+}
+
+#[test]
+fn mysql_urls_validate_ports_escapes_and_tls() {
+    for url in [
+        "mysql://root@localhost:0/db",
+        "mysql://root@localhost:bad/db",
+        "mysql://root@localhost/%zz",
+        "mysql://root@localhost/db?verify_identity=false",
+        "postgres://root@localhost/db",
+    ] {
+        assert!(parse_mysql_connection_string(url).is_err(), "{url}");
+    }
+    let parsed = parse_mysql_connection_string(
+        "jdbc:mariadb://app@host/db?ssl-mode=REQUIRED&ssl-ca=%2Ftmp%2Fca.pem",
+    )
+    .expect("TLS URL");
+    assert_eq!(
+        parsed.options.tls,
+        TlsMode::VerifyFull {
+            ca_file: Some("/tmp/ca.pem".into())
+        }
+    );
 }

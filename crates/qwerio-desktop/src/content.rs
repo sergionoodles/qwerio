@@ -64,7 +64,9 @@ pub fn entry_icon(kind: EntryKind, cx: &App) -> Icon {
     let theme = cx.theme();
     let (icon, color) = match kind {
         EntryKind::Folder => (Icon::new(IconName::Folder), theme.yellow),
-        EntryKind::Connection(EngineKind::Postgres) => (Icon::new(LucideIcon::Server), theme.blue),
+        EntryKind::Connection(EngineKind::Postgres | EngineKind::Mysql | EngineKind::Mariadb) => {
+            (Icon::new(LucideIcon::Server), theme.blue)
+        }
         EntryKind::Connection(EngineKind::Sqlite) | EntryKind::Database => {
             (Icon::new(LucideIcon::Database), theme.blue)
         }

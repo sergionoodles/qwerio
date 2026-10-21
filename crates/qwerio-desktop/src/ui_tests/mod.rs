@@ -124,6 +124,21 @@ fn seed_database(path: &Path) {
 fn test_services() -> AppServices {
     let mut drivers = DriverRegistry::new();
     drivers.register(Arc::new(SqliteDriver::new()));
+    static NETWORK_RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> =
+        std::sync::OnceLock::new();
+    let runtime = NETWORK_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("network runtime")
+    });
+    drivers.register(Arc::new(qwerio_mysql::MysqlDriver::new(
+        runtime.handle().clone(),
+    )));
+    drivers.register(Arc::new(qwerio_mysql::MysqlDriver::mariadb(
+        runtime.handle().clone(),
+    )));
 
     AppServices::new(
         drivers,
@@ -234,6 +249,28 @@ pub fn choose_option(
         }
 
         window.press("enter", cx);
+    });
+}
+
+/// Opens the new connection wizard and moves past its engine step by
+/// picking the card `engine` (such as `"engine-sqlite"`).
+pub fn start_new_connection(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    engine: &'static str,
+) {
+    use gpui_kit::test::TestWindowExt as _;
+
+    interact(handle, cx, |window, cx| window.click("add-connection", cx));
+    wait_until(handle, cx, "the engine step opens", |window, _| {
+        window.try_find(engine).is_some()
+    });
+    interact(handle, cx, |window, cx| {
+        window.click(engine, cx);
+        window.click("connection-continue", cx);
+    });
+    wait_until(handle, cx, "the details step opens", |window, _| {
+        window.try_find("connection-name").is_some()
     });
 }
 

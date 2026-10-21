@@ -34,6 +34,7 @@ use std::sync::Arc;
 use qwerio_app::AppServices;
 use qwerio_app::local_state::LocalState;
 use qwerio_app::registry::DriverRegistry;
+use qwerio_mysql::MysqlDriver;
 use qwerio_postgres::PostgresDriver;
 use qwerio_sqlite::SqliteDriver;
 
@@ -78,6 +79,8 @@ fn run() -> Result<(), String> {
     let mut drivers = DriverRegistry::new();
     drivers.register(Arc::new(SqliteDriver::new()));
     drivers.register(Arc::new(PostgresDriver::new(runtime.handle().clone())));
+    drivers.register(Arc::new(MysqlDriver::new(runtime.handle().clone())));
+    drivers.register(Arc::new(MysqlDriver::mariadb(runtime.handle().clone())));
 
     let services = Services {
         app: Arc::new(AppServices::new(

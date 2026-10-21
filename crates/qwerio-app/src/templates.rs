@@ -1,8 +1,8 @@
 //! Starter text for documents created beside database objects. The text is
 //! only inserted into an editor; nothing runs until the user runs it.
 
+use qwerio_core::connection::EngineKind;
 use qwerio_core::resource::ObjectRef;
-use qwerio_core::sql::quote_identifier_ansi;
 
 /// Rows a starter query asks for.
 pub const STARTER_ROW_LIMIT: usize = 100;
@@ -10,13 +10,17 @@ pub const STARTER_ROW_LIMIT: usize = 100;
 /// `SELECT * FROM <object> LIMIT 100;` with every identifier quoted. Both
 /// PostgreSQL and SQLite accept this form.
 pub fn select_statement(object: &ObjectRef) -> String {
+    select_statement_for_engine(object, EngineKind::Postgres)
+}
+
+pub fn select_statement_for_engine(object: &ObjectRef, engine: EngineKind) -> String {
     let name = match &object.namespace {
         Some(namespace) => format!(
             "{}.{}",
-            quote_identifier_ansi(namespace),
-            quote_identifier_ansi(&object.name)
+            engine.quote_identifier(namespace),
+            engine.quote_identifier(&object.name)
         ),
-        None => quote_identifier_ansi(&object.name),
+        None => engine.quote_identifier(&object.name),
     };
 
     format!("SELECT *\nFROM {name}\nLIMIT {STARTER_ROW_LIMIT};\n")
@@ -62,6 +66,16 @@ mod tests {
             namespace: namespace.map(str::to_owned),
             kind: ObjectKind::Table,
             name: name.to_owned(),
+        }
+    }
+
+    #[test]
+    fn mysql_starter_queries_quote_names() {
+        for engine in [EngineKind::Mysql, EngineKind::Mariadb] {
+            assert_eq!(
+                select_statement_for_engine(&object(None, "Order`Lines"), engine),
+                "SELECT *\nFROM `Order``Lines`\nLIMIT 100;\n"
+            );
         }
     }
 
