@@ -16,7 +16,7 @@ use crate::theme::{DARK_THEMES, LIGHT_THEMES, ThemePreference};
 
 const THEME_SELECT_WIDTH: f32 = 200.;
 /// Tall enough to list every theme without scrolling.
-const THEME_MENU_MAX_HEIGHT: f32 = 360.;
+const THEME_MENU_MAX_HEIGHT: f32 = 520.;
 const SYSTEM_DESCRIPTION: &str = "System follows your desktop's light or dark mode. \
      On Omarchy, it matches the active Omarchy theme.";
 

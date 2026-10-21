@@ -7,11 +7,11 @@ use tempfile::TempDir;
 
 use super::*;
 use crate::theme::omarchy::{OMARCHY_THEME_NAME, PALETTE_FILE};
-use crate::theme::{OMARCHY_DIRECTORY_SETTING, THEME_SETTING, ThemePreference};
+use crate::theme::{LIGHT_THEMES, OMARCHY_DIRECTORY_SETTING, THEME_SETTING, ThemePreference};
 use crate::workbench::FONT_SIZE_SETTING;
 
-/// Steps from System down to Tokyo Night: three light themes, then it.
-const STEPS_TO_TOKYO_NIGHT: usize = 4;
+/// Steps from System down to Tokyo Night: every light theme, then it.
+const STEPS_TO_TOKYO_NIGHT: usize = LIGHT_THEMES.len() + 1;
 const SAVED_FONT_SIZE: f32 = 18.;
 
 fn save_setting(fixture: &Fixture, key: &str, value: &impl serde::Serialize) {

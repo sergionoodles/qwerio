@@ -41,21 +41,29 @@ pub enum ThemePreference {
     GitHubLight,
     SolarizedLight,
     CatppuccinLatte,
+    AyuLight,
     TokyoNight,
     CatppuccinMocha,
     GruvboxDark,
+    Nord,
+    Dracula,
+    AyuMirage,
 }
 
-pub const LIGHT_THEMES: [ThemePreference; 3] = [
+pub const LIGHT_THEMES: [ThemePreference; 4] = [
     ThemePreference::GitHubLight,
     ThemePreference::SolarizedLight,
     ThemePreference::CatppuccinLatte,
+    ThemePreference::AyuLight,
 ];
 
-pub const DARK_THEMES: [ThemePreference; 3] = [
+pub const DARK_THEMES: [ThemePreference; 6] = [
     ThemePreference::TokyoNight,
     ThemePreference::CatppuccinMocha,
     ThemePreference::GruvboxDark,
+    ThemePreference::Nord,
+    ThemePreference::Dracula,
+    ThemePreference::AyuMirage,
 ];
 
 impl ThemePreference {
@@ -66,9 +74,13 @@ impl ThemePreference {
             Self::GitHubLight => "GitHub Light",
             Self::SolarizedLight => "Solarized Light",
             Self::CatppuccinLatte => "Catppuccin Latte",
+            Self::AyuLight => "Ayu Light",
             Self::TokyoNight => "Tokyo Night",
             Self::CatppuccinMocha => "Catppuccin Mocha",
             Self::GruvboxDark => "Gruvbox Dark",
+            Self::Nord => "Nord",
+            Self::Dracula => "Dracula",
+            Self::AyuMirage => "Ayu Mirage",
         }
     }
 
