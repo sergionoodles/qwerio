@@ -37,6 +37,7 @@ impl MysqlFixture {
             port: variable("QWERIO_TEST_MYSQL_PORT").parse().expect("port"),
             user: "root".to_owned(),
             database: database.to_owned(),
+            show_all_databases: true,
             tls: TlsMode::VerifyFull {
                 ca_file: Some(variable("QWERIO_TEST_MYSQL_CA").into()),
             },

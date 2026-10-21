@@ -135,6 +135,7 @@ impl DatabaseDriver for PostgresDriver {
             .database
             .clone()
             .unwrap_or_else(|| options.database.clone());
+        let visible_database = (!options.show_all_databases).then(|| options.database.clone());
         let credentials = request.credentials.clone();
         let purpose = request.purpose;
         let access = request.access;
@@ -176,6 +177,7 @@ impl DatabaseDriver for PostgresDriver {
 
         Ok(Arc::new(PostgresSession::new(SessionParts {
             info,
+            visible_database,
             runtime: self.runtime.clone(),
             client: connected.client,
             cancel_token: connected.cancel_token,

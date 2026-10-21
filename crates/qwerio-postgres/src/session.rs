@@ -31,6 +31,7 @@ use crate::execute::{Execution, execute_statement, needs_probe, probe_transactio
 
 pub(crate) struct PostgresSession {
     info: SessionInfo,
+    visible_database: Option<String>,
     runtime: Handle,
     /// `None` once closed. Requests hold the lock while they use the
     /// connection, which also serializes catalog and browse work.
@@ -42,6 +43,7 @@ pub(crate) struct PostgresSession {
 
 pub(crate) struct SessionParts {
     pub info: SessionInfo,
+    pub visible_database: Option<String>,
     pub runtime: Handle,
     pub client: Client,
     pub cancel_token: CancelToken,
@@ -114,6 +116,7 @@ impl PostgresSession {
     pub(crate) fn new(parts: SessionParts) -> Self {
         Self {
             info: parts.info,
+            visible_database: parts.visible_database,
             runtime: parts.runtime,
             client: Arc::new(Mutex::new(Some(parts.client))),
             cancel_token: parts.cancel_token,
@@ -175,9 +178,12 @@ impl DatabaseCatalog for PostgresSession {
     async fn list(&self, path: &CatalogPath) -> DbResult<Vec<CatalogEntry>> {
         let path = path.clone();
         let database = self.database().to_owned();
+        let visible_database = self.visible_database.clone();
 
         self.with_client(move |client| {
-            Box::pin(async move { catalog::list(client, &database, &path).await })
+            Box::pin(async move {
+                catalog::list(client, &database, visible_database.as_deref(), &path).await
+            })
         })
         .await
     }

@@ -305,6 +305,32 @@ async fn catalog_separates_databases_and_schemas() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn catalog_can_show_only_the_configured_database() {
+    let database = TestDatabase::new().await;
+    for show_all_databases in [true, false] {
+        let mut request = database.request(SessionPurpose::Browse, AccessMode::ReadOnly);
+        let ConnectionOptions::Postgres(options) = &mut request.connection.options else {
+            panic!("PostgreSQL options");
+        };
+        options.show_all_databases = show_all_databases;
+        // The configured database controls visibility even in another database's session.
+        request.database = Some("postgres".to_owned());
+        let session = driver().open(request).await.expect("open");
+        let entries = session.list(&CatalogPath::root()).await.expect("databases");
+        assert!(entries.iter().any(|entry| entry.name == database.name));
+        if show_all_databases {
+            assert!(entries.iter().any(|entry| entry.name == "postgres"));
+        } else {
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].kind, CatalogEntryKind::Database);
+            assert_eq!(entries[0].access, EntryAccess::Accessible);
+        }
+        close(session.as_ref()).await;
+    }
+    database.drop().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn objects_without_privileges_are_listed_as_inaccessible() {
     let database = TestDatabase::new().await;
     let role = format!("reader_{}", ConnectionId::new().as_uuid().simple());

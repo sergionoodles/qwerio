@@ -133,6 +133,9 @@ fn test_services() -> AppServices {
             .build()
             .expect("network runtime")
     });
+    drivers.register(Arc::new(qwerio_postgres::PostgresDriver::new(
+        runtime.handle().clone(),
+    )));
     drivers.register(Arc::new(qwerio_mysql::MysqlDriver::new(
         runtime.handle().clone(),
     )));

@@ -95,6 +95,7 @@ pub struct ConnectionForm {
     ca_file: Entity<InputState>,
     sqlite_path: Entity<InputState>,
     enforce_foreign_keys: bool,
+    show_all_databases: bool,
     has_stored_password: bool,
     status: Option<(SharedString, bool)>,
     is_busy: bool,
@@ -307,6 +308,7 @@ impl ConnectionForm {
             connection_string_state: ConnectionStringState::Empty,
             tls_select,
             enforce_foreign_keys: true,
+            show_all_databases: true,
             has_stored_password: false,
             status: None,
             is_busy: false,
@@ -457,7 +459,9 @@ impl ConnectionForm {
 
         self.password
             .update(cx, |input, cx| input.set_value(password, window, cx));
+        let show_all_databases = self.show_all_databases;
         self.fill(options, window, cx);
+        self.show_all_databases = show_all_databases;
         self.refresh_name_placeholder(window, cx);
     }
 
@@ -531,13 +535,14 @@ impl ConnectionForm {
             input.update(cx, |input, cx| input.set_value(value, window, cx));
         };
 
-        let (host, port, user, database, tls) = match options {
+        let (host, port, user, database, tls, show_all_databases) = match options {
             ConnectionOptions::Postgres(options) => (
                 options.host,
                 options.port,
                 options.user,
                 options.database,
                 options.tls,
+                options.show_all_databases,
             ),
             ConnectionOptions::Mysql(options) | ConnectionOptions::Mariadb(options) => (
                 options.host,
@@ -545,6 +550,7 @@ impl ConnectionForm {
                 options.user,
                 options.database,
                 options.tls,
+                options.show_all_databases,
             ),
             ConnectionOptions::Sqlite(options) => {
                 set(
@@ -557,6 +563,7 @@ impl ConnectionForm {
                 return;
             }
         };
+        self.show_all_databases = show_all_databases;
         set(&self.host, host, window, cx);
         set(&self.port, port.to_string(), window, cx);
         set(&self.user, user, window, cx);
@@ -624,6 +631,7 @@ impl ConnectionForm {
                         port,
                         user: Self::text(&self.user, cx),
                         database: Self::text(&self.database, cx),
+                        show_all_databases: self.show_all_databases,
                         tls,
                         connect_timeout: Some(CONNECT_TIMEOUT),
                     };
@@ -638,6 +646,7 @@ impl ConnectionForm {
                     port,
                     user: Self::text(&self.user, cx),
                     database: Self::text(&self.database, cx),
+                    show_all_databases: self.show_all_databases,
                     tls,
                     connect_timeout: Some(CONNECT_TIMEOUT),
                     application_name: None,
