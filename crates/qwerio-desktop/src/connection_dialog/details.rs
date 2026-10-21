@@ -94,7 +94,31 @@ impl ConnectionForm {
             self.render_server_fields(cx).into_any_element()
         };
 
-        render_section("Connection", Some(toggle.into_any_element()), content, cx)
+        let content = v_flex()
+            .gap_3()
+            .child(content)
+            .child(
+                Checkbox::new("show-all-databases")
+                    .label("Show all databases")
+                    .checked(self.show_all_databases)
+                    .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                        this.show_all_databases = *checked;
+                        cx.notify();
+                    })),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Turn off to show only the database specified in this connection."),
+            );
+
+        render_section(
+            "Connection",
+            Some(toggle.into_any_element()),
+            content.into_any_element(),
+            cx,
+        )
     }
 
     fn render_connection_string(&self, cx: &App) -> impl IntoElement {

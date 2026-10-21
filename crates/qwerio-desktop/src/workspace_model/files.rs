@@ -32,12 +32,15 @@ impl WorkspaceModel {
         cx: &mut Context<Self>,
     ) -> Task<Result<(), SharedString>> {
         let storage = self.storage();
+        let sessions = Arc::clone(&self.services.sessions);
         cx.background_spawn(async move {
             storage
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .bind_connection(connection, options, password)
-                .map_err(|error| error_text(&error))
+                .map_err(|error| error_text(&error))?;
+            sessions.close_connection(connection).await;
+            Ok(())
         })
     }
 

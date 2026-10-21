@@ -16,7 +16,11 @@ fn metadata<T: mysql_async::prelude::FromRow>(row: Row) -> DbResult<T> {
         .map_err(|error| DatabaseError::internal(format!("Invalid catalog result: {error}")))
 }
 
-pub(crate) async fn list(client: &mut Conn, path: &CatalogPath) -> DbResult<Vec<CatalogEntry>> {
+pub(crate) async fn list(
+    client: &mut Conn,
+    visible_database: Option<&str>,
+    path: &CatalogPath,
+) -> DbResult<Vec<CatalogEntry>> {
     if path.namespace.is_some() {
         return Err(DatabaseError::invalid_request(
             "MySQL databases have no separate schema level",
@@ -26,6 +30,7 @@ pub(crate) async fn list(client: &mut Conn, path: &CatalogPath) -> DbResult<Vec<
         let names: Vec<String> = client.query("SHOW DATABASES").await.map_err(map_error)?;
         return Ok(names
             .into_iter()
+            .filter(|name| visible_database.is_none_or(|database| name == database))
             .map(|name| CatalogEntry {
                 name,
                 kind: CatalogEntryKind::Database,

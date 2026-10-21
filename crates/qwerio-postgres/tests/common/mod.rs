@@ -45,6 +45,7 @@ impl TestServer {
             port: self.port,
             user: self.user.clone(),
             database: database.to_owned(),
+            show_all_databases: true,
             tls: TlsMode::VerifyFull {
                 ca_file: Some(self.ca_file.clone()),
             },

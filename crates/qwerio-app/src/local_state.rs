@@ -610,6 +610,7 @@ mod tests {
                 port: 5432,
                 user: "analyst".to_owned(),
                 database: "sales".to_owned(),
+                show_all_databases: true,
                 tls: TlsMode::VerifyFull { ca_file: None },
                 connect_timeout: None,
                 application_name: None,
@@ -635,6 +636,48 @@ mod tests {
             state.bound_connections(workspace).expect("list"),
             vec![connection]
         );
+    }
+
+    #[test]
+    fn database_visibility_defaults_for_legacy_bindings_and_persists_changes() {
+        let state = LocalState::in_memory().expect("state");
+        let workspace = WorkspaceId::new();
+        for engine in ["postgres", "mysql", "mariadb"] {
+            let connection = ConnectionId::new();
+            let legacy_options = serde_json::json!({
+                "engine": engine,
+                "host": "localhost",
+                "port": 5432,
+                "user": "analyst",
+                "database": "sales",
+                "tls": { "mode": "disable" }
+            });
+            let mut options: ConnectionOptions =
+                serde_json::from_value(legacy_options).expect("legacy options");
+            let show_all_databases = match &mut options {
+                ConnectionOptions::Postgres(options) => &mut options.show_all_databases,
+                ConnectionOptions::Mysql(options) | ConnectionOptions::Mariadb(options) => {
+                    &mut options.show_all_databases
+                }
+                ConnectionOptions::Sqlite(_) => panic!("server options"),
+            };
+            assert!(
+                *show_all_databases,
+                "legacy {engine} bindings show all databases"
+            );
+            *show_all_databases = false;
+            let binding = ConnectionBinding {
+                options,
+                credential: None,
+            };
+            state
+                .save_binding(workspace, connection, &binding)
+                .expect("save");
+            assert_eq!(
+                state.binding(workspace, connection).expect("load"),
+                Some(binding)
+            );
+        }
     }
 
     #[test]

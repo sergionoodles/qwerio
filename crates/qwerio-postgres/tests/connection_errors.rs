@@ -30,6 +30,7 @@ fn request(endpoint: SocketAddr, tls: TlsMode) -> OpenSessionRequest {
                 port: endpoint.port(),
                 user: "test".to_owned(),
                 database: "test".to_owned(),
+                show_all_databases: true,
                 tls,
                 connect_timeout: Some(TEST_TIMEOUT),
                 application_name: None,

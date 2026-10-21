@@ -109,6 +109,13 @@ impl DatabaseDriver for MysqlDriver {
                 });
             }
         }
+        if !options.show_all_databases && options.database.trim().is_empty() {
+            issues.push(ValidationIssue {
+                field: "database",
+                message: "Enter a database name when showing only the specified database"
+                    .to_owned(),
+            });
+        }
         if options.port == 0 {
             issues.push(ValidationIssue {
                 field: "port",
@@ -139,6 +146,7 @@ impl DatabaseDriver for MysqlDriver {
             .database
             .clone()
             .unwrap_or_else(|| options.database.clone());
+        let visible_database = (!options.show_all_databases).then(|| options.database.clone());
         let opts = connect::options(options, &request.credentials, &database);
         let control_opts = connect::options(options, &request.credentials, "");
         let timeout = options.connect_timeout;
@@ -179,6 +187,7 @@ impl DatabaseDriver for MysqlDriver {
             connection,
             control_opts,
             timeout,
+            visible_database,
         )))
     }
 }

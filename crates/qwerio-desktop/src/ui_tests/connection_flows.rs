@@ -72,12 +72,30 @@ fn open_sidebar_connection_settings(fixture: &Fixture, cx: &mut TestAppContext) 
 #[gpui_kit::test]
 fn edits_a_connection_from_the_sidebar(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
+    let runtime = tokio::runtime::Runtime::new().expect("runtime");
+    let workspace = Workspace::open(&fixture.root).expect("workspace");
+    let connection = workspace.manifest().connections[0].id;
+    let resolved = fixture
+        .services
+        .resolve_connection(workspace.manifest(), connection)
+        .expect("resolve");
+    runtime
+        .block_on(fixture.services.sessions.browse(
+            &resolved.descriptor,
+            &resolved.credentials,
+            None,
+        ))
+        .expect("cache browsing session");
     let window = open_sidebar_connection_settings(&fixture, cx);
     assert_footer_alignment(window, cx, "cancel-connection");
     let original = Workspace::open(&fixture.root).expect("workspace");
     let connection = original.manifest().connections[0].id;
     let replacement = fixture.database.with_file_name("replacement.sqlite");
     seed_database(&replacement);
+    rusqlite::Connection::open(&replacement)
+        .expect("replacement database")
+        .execute_batch("CREATE TABLE replacement_only (id INTEGER PRIMARY KEY)")
+        .expect("replacement catalog");
     const EDITED_NAME: &str = "Updated shop";
 
     interact(window, cx, |window, cx| {
@@ -105,11 +123,24 @@ fn edits_a_connection_from_the_sidebar(cx: &mut TestAppContext) {
         .services
         .resolve_connection(workspace.manifest(), connection)
         .expect("saved connection");
-    let ConnectionOptions::Sqlite(options) = resolved.descriptor.options else {
+    let ConnectionOptions::Sqlite(options) = &resolved.descriptor.options else {
         panic!("the connection must stay SQLite");
     };
     assert_eq!(options.path, replacement);
     assert!(!options.enforce_foreign_keys);
+    let entries = runtime.block_on(async {
+        let session = fixture
+            .services
+            .sessions
+            .browse(&resolved.descriptor, &resolved.credentials, None)
+            .await
+            .expect("updated session");
+        session
+            .list(&qwerio_core::resource::CatalogPath::root())
+            .await
+            .expect("updated catalog")
+    });
+    assert!(entries.iter().any(|entry| entry.name == "replacement_only"));
 }
 
 #[gpui_kit::test]
@@ -267,14 +298,11 @@ fn fills_the_form_from_a_pasted_connection_string(cx: &mut TestAppContext) {
     interact(window, cx, |window, _| {
         assert!(window.try_find("use-connection-string").is_none());
         assert!(window.try_find("connection-string").is_none());
+        assert!(window.try_find("show-all-databases").is_none());
     });
 }
 
-fn adds_mysql_family_connection(
-    engine: EngineKind,
-    engine_id: &'static str,
-    cx: &mut TestAppContext,
-) {
+fn adds_server_connection(engine: EngineKind, engine_id: &'static str, cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     init_app(fixture.services.clone(), cx);
     let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
@@ -283,7 +311,14 @@ fn adds_mysql_family_connection(
     });
     start_new_connection(window, cx, engine_id);
     interact(window, cx, |window, cx| {
-        assert_eq!(window.find("connection-port").value(), Some("3306"));
+        let default_port = if engine == EngineKind::Postgres {
+            "5432"
+        } else {
+            "3306"
+        };
+        assert_eq!(window.find("connection-port").value(), Some(default_port));
+        assert_eq!(window.find("show-all-databases").checked(), Some(true));
+        window.click("show-all-databases", cx);
         window.click("use-connection-string", cx);
     });
     wait_until(window, cx, "URL field appears", |window, _| {
@@ -291,16 +326,19 @@ fn adds_mysql_family_connection(
     });
     interact(window, cx, |window, cx| {
         window.click("connection-string", cx);
-        window.input(
-            "mysql://app:%20private%20password%20@localhost:3307/shop",
-            cx,
-        );
+        let url = if engine == EngineKind::Postgres {
+            "postgres://app:%20private%20password%20@localhost:3307/shop"
+        } else {
+            "mysql://app:%20private%20password%20@localhost:3307/shop"
+        };
+        window.input(url, cx);
     });
     wait_until(window, cx, "URL applies", |window, _| {
         label_of(window, "connection-string-feedback")
             .is_some_and(|text| text.starts_with("Details filled in"))
     });
     interact(window, cx, |window, cx| {
+        assert_eq!(window.find("show-all-databases").checked(), Some(false));
         window.click("use-connection-string", cx)
     });
     wait_until(window, cx, "fields return", |window, _| {
@@ -328,14 +366,25 @@ fn adds_mysql_family_connection(
         .resolve_connection(workspace.manifest(), alias.id)
         .expect("saved endpoint");
     assert_eq!(resolved.descriptor.engine(), engine);
-    let (ConnectionOptions::Mysql(options) | ConnectionOptions::Mariadb(options)) =
-        resolved.descriptor.options
-    else {
-        panic!("server options");
+    let (host, port, database, show_all_databases) = match resolved.descriptor.options {
+        ConnectionOptions::Postgres(options) => (
+            options.host,
+            options.port,
+            options.database,
+            options.show_all_databases,
+        ),
+        ConnectionOptions::Mysql(options) | ConnectionOptions::Mariadb(options) => (
+            options.host,
+            options.port,
+            options.database,
+            options.show_all_databases,
+        ),
+        ConnectionOptions::Sqlite(_) => panic!("server options"),
     };
-    assert_eq!(options.host, "localhost");
-    assert_eq!(options.port, 3307);
-    assert_eq!(options.database, "shop");
+    assert_eq!(host, "localhost");
+    assert_eq!(port, 3307);
+    assert_eq!(database, "shop");
+    assert!(!show_all_databases);
     assert_eq!(
         resolved
             .credentials
@@ -344,14 +393,47 @@ fn adds_mysql_family_connection(
             .map(|secret| secret.expose()),
         Some(" private password ")
     );
+    reopens_database_visibility_setting(window, alias.id, cx);
+}
+
+fn reopens_database_visibility_setting(
+    window: AnyWindowHandle,
+    connection: qwerio_core::ids::ConnectionId,
+    cx: &mut TestAppContext,
+) {
+    let sidebar_key = SharedString::from(format!("connection-{connection}"));
+    wait_until(window, cx, "server appears in sidebar", |window, _| {
+        window.try_find(sidebar_key.clone()).is_some()
+    });
+    interact(window, cx, |window, cx| window.right_click(sidebar_key, cx));
+    wait_until(window, cx, "connection menu opens", |window, _| {
+        window.try_find("popup-menu").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        window.within("popup-menu").click(0_usize, cx)
+    });
+    wait_until(window, cx, "saved visibility loads", |window, _| {
+        window
+            .try_find("connection-database")
+            .is_some_and(|field| field.value() == Some("shop"))
+    });
+    interact(window, cx, |window, cx| {
+        assert_eq!(window.find("show-all-databases").checked(), Some(false));
+        window.click("cancel-connection", cx);
+    });
+}
+
+#[gpui_kit::test]
+fn adds_a_postgres_connection_with_url_and_persists_it(cx: &mut TestAppContext) {
+    adds_server_connection(EngineKind::Postgres, "engine-postgres", cx);
 }
 
 #[gpui_kit::test]
 fn adds_a_mysql_connection_with_url_and_persists_it(cx: &mut TestAppContext) {
-    adds_mysql_family_connection(EngineKind::Mysql, "engine-mysql", cx);
+    adds_server_connection(EngineKind::Mysql, "engine-mysql", cx);
 }
 
 #[gpui_kit::test]
 fn adds_a_mariadb_connection_with_url_and_persists_it(cx: &mut TestAppContext) {
-    adds_mysql_family_connection(EngineKind::Mariadb, "engine-mariadb", cx);
+    adds_server_connection(EngineKind::Mariadb, "engine-mariadb", cx);
 }

@@ -26,6 +26,7 @@ use tokio::sync::Mutex;
 
 pub(crate) struct MysqlSession {
     info: SessionInfo,
+    visible_database: Option<String>,
     runtime: Handle,
     client: Arc<Mutex<Option<Conn>>>,
     control_options: Opts,
@@ -88,9 +89,11 @@ impl MysqlSession {
         client: Conn,
         control_options: Opts,
         timeout: Option<Duration>,
+        visible_database: Option<String>,
     ) -> Self {
         Self {
             info,
+            visible_database,
             runtime,
             connection_id: client.id(),
             client: Arc::new(Mutex::new(Some(client))),
@@ -142,8 +145,11 @@ impl MysqlSession {
 impl DatabaseCatalog for MysqlSession {
     async fn list(&self, path: &CatalogPath) -> DbResult<Vec<CatalogEntry>> {
         let path = path.clone();
-        self.with_client(move |client| Box::pin(async move { catalog::list(client, &path).await }))
-            .await
+        let visible_database = self.visible_database.clone();
+        self.with_client(move |client| {
+            Box::pin(async move { catalog::list(client, visible_database.as_deref(), &path).await })
+        })
+        .await
     }
 
     async fn describe(&self, object: &ObjectRef) -> DbResult<ObjectDetails> {

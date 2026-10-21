@@ -30,6 +30,72 @@ async fn execute_ok(
 }
 
 #[tokio::test]
+async fn catalog_can_show_only_the_configured_database() {
+    with_database(&MysqlFixture, |context| async move {
+        for show_all_databases in [true, false] {
+            let mut connection = context.connection.clone();
+            let (ConnectionOptions::Mysql(options) | ConnectionOptions::Mariadb(options)) =
+                &mut connection.options
+            else {
+                panic!("MySQL family options");
+            };
+            options.show_all_databases = show_all_databases;
+            let session = context
+                .driver
+                .open(OpenSessionRequest {
+                    connection,
+                    credentials: context.credentials.clone(),
+                    purpose: SessionPurpose::Browse,
+                    access: AccessMode::ReadOnly,
+                    database: Some("mysql".to_owned()),
+                })
+                .await
+                .expect("open");
+            let entries = session
+                .list(&qwerio_core::resource::CatalogPath::root())
+                .await
+                .expect("databases");
+            let database = context.database.as_ref().expect("database name");
+            assert!(entries.iter().any(|entry| &entry.name == database));
+            if show_all_databases {
+                assert!(entries.iter().any(|entry| entry.name == "mysql"));
+            } else {
+                assert_eq!(entries.len(), 1);
+            }
+            session.close().await.expect("close");
+        }
+    })
+    .await;
+}
+
+#[tokio::test]
+async fn showing_only_the_configured_database_requires_a_database_name() {
+    let mut connection = MysqlFixture.descriptor("");
+    let driver = MysqlFixture.driver();
+    assert!(driver.validate(&connection.options).is_empty());
+    let (ConnectionOptions::Mysql(options) | ConnectionOptions::Mariadb(options)) =
+        &mut connection.options
+    else {
+        panic!("MySQL family options");
+    };
+    options.show_all_databases = false;
+    let issues = driver.validate(&connection.options);
+    assert!(issues.iter().any(|issue| issue.field == "database"));
+    let error = driver
+        .open(OpenSessionRequest {
+            connection,
+            credentials: MysqlFixture.credentials(),
+            purpose: SessionPurpose::Browse,
+            access: AccessMode::ReadOnly,
+            database: None,
+        })
+        .await
+        .err()
+        .expect("invalid options");
+    assert_eq!(error.kind, ErrorKind::InvalidRequest);
+}
+
+#[tokio::test]
 async fn ddl_commits_and_constraint_errors_keep_the_transaction_usable() {
     with_database(&MysqlFixture, |context| async move {
         let session = context.console().await;

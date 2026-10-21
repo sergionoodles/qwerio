@@ -50,10 +50,11 @@ fn is_decoded_type(name: &str) -> bool {
 pub(crate) async fn list(
     client: &Client,
     session_database: &str,
+    visible_database: Option<&str>,
     path: &CatalogPath,
 ) -> DbResult<Vec<CatalogEntry>> {
     match (&path.database, &path.namespace) {
-        (None, None) => list_databases(client).await,
+        (None, None) => list_databases(client, visible_database).await,
         (Some(database), None) => {
             ensure_session_database(session_database, database)?;
             list_namespaces(client).await
@@ -78,15 +79,19 @@ fn ensure_session_database(session_database: &str, requested: &str) -> DbResult<
     )))
 }
 
-async fn list_databases(client: &Client) -> DbResult<Vec<CatalogEntry>> {
+async fn list_databases(
+    client: &Client,
+    visible_database: Option<&str>,
+) -> DbResult<Vec<CatalogEntry>> {
     let rows = client
         .query(
             "SELECT datname, has_database_privilege(oid, 'CONNECT'), \
                     shobj_description(oid, 'pg_database') \
              FROM pg_catalog.pg_database \
              WHERE NOT datistemplate AND datallowconn \
+             AND ($1::text IS NULL OR datname = $1) \
              ORDER BY datname",
-            &[],
+            &[&visible_database],
         )
         .await
         .map_err(|error| map_error(error, None))?;

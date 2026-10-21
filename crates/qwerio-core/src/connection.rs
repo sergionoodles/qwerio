@@ -80,6 +80,10 @@ impl ConnectionOptions {
     }
 }
 
+fn show_all_databases_by_default() -> bool {
+    true
+}
+
 pub const DEFAULT_MYSQL_PORT: u16 = 3306;
 
 /// Shared endpoint options for MySQL and MariaDB. A socket is an absolute file path.
@@ -89,6 +93,9 @@ pub struct MysqlOptions {
     pub port: u16,
     pub user: String,
     pub database: String,
+    /// Whether the catalog lists every database or only the configured database.
+    #[serde(default = "show_all_databases_by_default")]
+    pub show_all_databases: bool,
     pub tls: TlsMode,
     #[serde(default, with = "duration_seconds")]
     pub connect_timeout: Option<Duration>,
@@ -104,6 +111,9 @@ pub struct PostgresOptions {
     pub user: String,
     /// The database opened first. Other databases on the server open their own sessions.
     pub database: String,
+    /// Whether the catalog lists every database or only the configured database.
+    #[serde(default = "show_all_databases_by_default")]
+    pub show_all_databases: bool,
     pub tls: TlsMode,
     #[serde(default, with = "duration_seconds")]
     pub connect_timeout: Option<Duration>,
