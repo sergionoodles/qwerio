@@ -200,15 +200,19 @@ async fn populate(context: &Context, fixture: &dyn ContractFixture) {
          (2023, 1, 'first'), (2024, 1, NULL), (2024, 2, 'second'), (2024, 3, NULL)"
             .to_owned(),
     );
+    let quoted_lines = context.driver.engine().quote_identifier("lines");
     statements.push(format!(
-        "INSERT INTO lines (id, order_no, order_year, payload) VALUES \
+        "INSERT INTO {quoted_lines} (id, order_no, order_year, payload) VALUES \
          (1, 2, 2024, {}), (2, 1, 2023, NULL), (3, NULL, 2024, NULL)",
         fixture.blob_literal("00ff10")
     ));
-    statements.push(
-        "INSERT INTO \"Weird \"\"Name\"\" Table\" (\"Mixed Case\", \"select\") VALUES (1, 'quoted')"
-            .to_owned(),
-    );
+    let engine = context.driver.engine();
+    statements.push(format!(
+        "INSERT INTO {} ({}, {}) VALUES (1, 'quoted')",
+        engine.quote_identifier(WEIRD_TABLE),
+        engine.quote_identifier("Mixed Case"),
+        engine.quote_identifier("select")
+    ));
 
     for statement in statements {
         let events = run(session.as_ref(), &statement).await;
@@ -464,7 +468,14 @@ pub async fn values_preserve_blobs_and_floats(context: Context) {
     let session = context.console().await;
 
     assert_eq!(
-        single_value(session.as_ref(), "SELECT payload FROM lines WHERE id = 1").await,
+        single_value(
+            session.as_ref(),
+            &format!(
+                "SELECT payload FROM {} WHERE id = 1",
+                context.driver.engine().quote_identifier("lines")
+            )
+        )
+        .await,
         Value::Bytes(vec![0x00, 0xff, 0x10])
     );
     assert_eq!(
@@ -1091,13 +1102,16 @@ pub async fn schema_changes_create_tables_and_columns(context: Context) {
     let console = context.console().await;
 
     for change in [&create, &add] {
-        let sql = change.render().expect("render schema change");
+        let sql = change
+            .render_for_engine(context.driver.engine())
+            .expect("render schema change");
         let events = run(console.as_ref(), &sql).await;
         assert_eq!(failure(&events), None, "{sql}");
     }
 
-    let quoted = "\"New \"\"Table\"\"\"";
-    let insert = format!("INSERT INTO {quoted} (\"column 0\") VALUES ('first')");
+    let quoted = context.driver.engine().quote_identifier("New \"Table\"");
+    let column = context.driver.engine().quote_identifier("column 0");
+    let insert = format!("INSERT INTO {quoted} ({column}) VALUES ('first')");
     assert_eq!(failure(&run(console.as_ref(), &insert).await), None);
     let select = format!("SELECT id, visits FROM {quoted}");
     assert_eq!(

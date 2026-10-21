@@ -1,0 +1,22 @@
+[package]
+name = "qwerio-mysql"
+description = "MySQL and MariaDB adapter: connections, catalog, browsing, edits, streaming, and cancellation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+async-trait = "0.1.89"
+futures-util = { version = "0.3.31", default-features = false, features = ["std"] }
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "rustls-tls", "ring"] }
+qwerio-core.workspace = true
+tokio = { version = "1.48", features = ["rt", "net", "time", "sync"] }
+
+[dev-dependencies]
+qwerio-core = { workspace = true, features = ["contract-tests"] }
+tokio = { version = "1.48", features = ["rt-multi-thread", "macros", "time"] }
+
+[lints]
+workspace = true

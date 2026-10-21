@@ -1,41 +1,56 @@
 //! Creating or editing a connection. File workspaces save connection details
 //! and passwords inside the workspace's optional encryption. Legacy folders
 //! retain their machine-local bindings and platform keyring credentials.
+//!
+//! A new connection is a two-step wizard: [`engine_picker`] chooses the
+//! database, then [`details`] collects its settings. Editing opens straight
+//! on the details, since an alias never changes engine.
+
+mod details;
+mod engine_picker;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::dialog::DialogClose;
-use gpui_kit::component::input::{Input, InputEvent, InputState};
-use gpui_kit::component::select::{Select, SelectEvent, SelectState};
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::component::select::{SelectEvent, SelectState};
 use gpui_kit::component::{
-    ActiveTheme as _, Disableable as _, IndexPath, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, IconName, IndexPath, StyledExt as _, WindowExt as _,
+    h_flex, v_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, PathPromptOptions, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
-    div,
+    AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _,
+    PathPromptOptions, Render, SharedString, Styled as _, Subscription, Task, Window, div, px,
 };
 use qwerio_core::connection::{
-    ConnectionDescriptor, ConnectionOptions, Credentials, DEFAULT_POSTGRES_PORT, EngineKind,
-    PostgresOptions, Secret, SqliteOptions, TlsMode,
+    ConnectionDescriptor, ConnectionOptions, Credentials, DEFAULT_MYSQL_PORT,
+    DEFAULT_POSTGRES_PORT, EngineKind, MysqlOptions, PostgresOptions, Secret, SqliteOptions,
+    TlsMode,
 };
-use qwerio_core::connection_string::{ParsedConnectionString, parse_connection_string};
+use qwerio_core::connection_string::{parse_connection_string, parse_mysql_connection_string};
 use qwerio_core::ids::ConnectionId;
 
 use crate::workspace_model::{WorkspaceModel, error_text};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const ENGINES: [EngineKind; 2] = [EngineKind::Postgres, EngineKind::Sqlite];
+const DIALOG_WIDTH: f32 = 560.;
+/// Every engine the wizard offers, in the order its grid shows them.
+const ENGINES: [EngineKind; 4] = [
+    EngineKind::Postgres,
+    EngineKind::Sqlite,
+    EngineKind::Mysql,
+    EngineKind::Mariadb,
+];
 const TLS_LABELS: [&str; 3] = ["Verify certificate", "Verify with CA file", "No encryption"];
 const NAME_PLACEHOLDER: &str = "Name shown in the workspace";
+const PASSWORD_PLACEHOLDER: &str = "Password";
+const STORED_PASSWORD_PLACEHOLDER: &str = "Leave empty to keep the saved password";
 const CONNECTION_STRING_PLACEHOLDER: &str = "postgres://user:password@host:5432/database";
-const CONNECTION_STRING_APPLIED: &str = "Filled in from the connection string";
+const MISSING_CONNECTION_STRING: &str =
+    "Paste a connection string, or turn it off to enter the details";
 const NEW_SQLITE_FILE_NAME: &str = "database.sqlite";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,13 +60,30 @@ enum Tls {
     Disabled,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Step {
+    ChooseEngine,
+    Details,
+}
+
+/// What the connection string field last produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ConnectionStringState {
+    Empty,
+    /// The details fields hold the parsed values.
+    Applied,
+    Invalid(SharedString),
+}
+
 pub struct ConnectionForm {
     model: Entity<WorkspaceModel>,
     editing: Option<ConnectionId>,
+    step: Step,
+    engine: EngineKind,
+    /// Server connections: the connection string replaces the endpoint fields.
+    use_connection_string: bool,
     connection_string: Entity<InputState>,
-    /// The outcome of reading the connection string, and whether it failed.
-    connection_string_feedback: Option<(SharedString, bool)>,
-    engine_select: Entity<SelectState<Vec<SharedString>>>,
+    connection_string_state: ConnectionStringState,
     tls_select: Entity<SelectState<Vec<SharedString>>>,
     name: Entity<InputState>,
     host: Entity<InputState>,
@@ -83,47 +115,80 @@ pub fn open(
     };
 
     window.open_dialog(cx, move |dialog, _, cx| {
-        let form = form.clone();
-        let is_busy = form.read(cx).is_busy;
-        let test_form = form.clone();
-        let save_form = form.clone();
-
         dialog
             .title(title)
-            .w(gpui_kit::px(520.))
+            .w(px(DIALOG_WIDTH))
             .child(form.clone())
-            .footer(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        div().flex_none().child(
-                            DialogClose::new()
-                                .child(Button::new("cancel-connection").ghost().label("Cancel")),
-                        ),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("test-connection")
-                            .outline()
-                            .label("Test")
-                            .disabled(is_busy)
-                            .on_click(move |_, window, cx| {
-                                test_form.update(cx, |form, cx| form.test(window, cx))
-                            }),
-                    )
-                    .child(
-                        Button::new("save-connection")
-                            .primary()
-                            .label("Save")
-                            .disabled(is_busy)
-                            .on_click(move |_, window, cx| {
-                                save_form.update(cx, |form, cx| form.save(window, cx))
-                            }),
-                    ),
-            )
+            .footer(render_footer(&form, cx))
     });
+}
+
+fn render_footer(form: &Entity<ConnectionForm>, cx: &App) -> AnyElement {
+    let state = form.read(cx);
+    let is_busy = state.is_busy;
+    let is_new = state.editing.is_none();
+
+    let footer = h_flex().w_full().gap_2();
+
+    if state.step == Step::ChooseEngine {
+        let continue_form = form.clone();
+        return footer
+            .child(cancel_button())
+            .child(div().flex_1())
+            .child(
+                Button::new("connection-continue")
+                    .primary()
+                    .label("Continue")
+                    .on_click(move |_, window, cx| {
+                        continue_form.update(cx, |form, cx| form.show_details(window, cx))
+                    }),
+            )
+            .into_any_element();
+    }
+
+    let back_form = form.clone();
+    let test_form = form.clone();
+    let save_form = form.clone();
+    let leading = if is_new {
+        Button::new("connection-back")
+            .ghost()
+            .icon(IconName::ArrowLeft)
+            .label("Back")
+            .disabled(is_busy)
+            .on_click(move |_, _, cx| back_form.update(cx, |form, cx| form.show_engines(cx)))
+            .into_any_element()
+    } else {
+        cancel_button().into_any_element()
+    };
+
+    footer
+        .child(div().flex_none().child(leading))
+        .child(div().flex_1())
+        .child(
+            Button::new("test-connection")
+                .outline()
+                .label("Test")
+                .disabled(is_busy)
+                .on_click(move |_, window, cx| {
+                    test_form.update(cx, |form, cx| form.test(window, cx))
+                }),
+        )
+        .child(
+            Button::new("save-connection")
+                .primary()
+                .label("Save")
+                .disabled(is_busy)
+                .on_click(move |_, window, cx| {
+                    save_form.update(cx, |form, cx| form.save(window, cx))
+                }),
+        )
+        .into_any_element()
+}
+
+fn cancel_button() -> impl IntoElement {
+    div()
+        .flex_none()
+        .child(DialogClose::new().child(Button::new("cancel-connection").ghost().label("Cancel")))
 }
 
 /// Asks where to save a new SQLite database, creates the empty file, and
@@ -177,10 +242,6 @@ impl ConnectionForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let engine_labels: Vec<SharedString> = ENGINES
-            .iter()
-            .map(|engine| engine.display_name().into())
-            .collect();
         let tls_labels: Vec<SharedString> = TLS_LABELS
             .iter()
             .map(|label| SharedString::from(*label))
@@ -189,8 +250,6 @@ impl ConnectionForm {
             cx.new(|cx| InputState::new(window, cx).placeholder(placeholder))
         };
 
-        let engine_select =
-            cx.new(|cx| SelectState::new(engine_labels, Some(IndexPath::new(0)), window, cx));
         let tls_select =
             cx.new(|cx| SelectState::new(tls_labels, Some(IndexPath::new(0)), window, cx));
 
@@ -204,14 +263,6 @@ impl ConnectionForm {
         let sqlite_path = input("Database file", window, cx);
 
         let subscriptions = vec![
-            cx.subscribe_in(
-                &engine_select,
-                window,
-                |this, _, _: &SelectEvent<Vec<SharedString>>, window, cx| {
-                    this.refresh_name_placeholder(window, cx);
-                    cx.notify();
-                },
-            ),
             cx.subscribe(
                 &tls_select,
                 |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify(),
@@ -228,9 +279,14 @@ impl ConnectionForm {
         });
         let password = cx.new(|cx| {
             InputState::new(window, cx)
-                .placeholder("Password")
+                .placeholder(PASSWORD_PLACEHOLDER)
                 .masked(true)
         });
+        let step = if editing.is_some() {
+            Step::Details
+        } else {
+            Step::ChooseEngine
+        };
 
         let mut form = Self {
             name: input(NAME_PLACEHOLDER, window, cx),
@@ -243,9 +299,11 @@ impl ConnectionForm {
             sqlite_path,
             model,
             editing,
+            step,
+            engine: ENGINES[0],
+            use_connection_string: false,
             connection_string,
-            connection_string_feedback: None,
-            engine_select,
+            connection_string_state: ConnectionStringState::Empty,
             tls_select,
             enforce_foreign_keys: true,
             has_stored_password: false,
@@ -259,6 +317,78 @@ impl ConnectionForm {
         }
 
         form
+    }
+
+    fn choose_engine(&mut self, engine: EngineKind, window: &mut Window, cx: &mut Context<Self>) {
+        let old_default = if matches!(self.engine, EngineKind::Mysql | EngineKind::Mariadb) {
+            DEFAULT_MYSQL_PORT
+        } else {
+            DEFAULT_POSTGRES_PORT
+        };
+        let new_default = if matches!(engine, EngineKind::Mysql | EngineKind::Mariadb) {
+            DEFAULT_MYSQL_PORT
+        } else {
+            DEFAULT_POSTGRES_PORT
+        };
+        if Self::text(&self.port, cx) == old_default.to_string() {
+            self.port.update(cx, |input, cx| {
+                input.set_value(new_default.to_string(), window, cx)
+            });
+        }
+        if self.engine != engine {
+            self.use_connection_string = false;
+            self.connection_string_state = ConnectionStringState::Empty;
+            self.connection_string.update(cx, |input, cx| {
+                input.set_value("", window, cx);
+                let placeholder = if matches!(engine, EngineKind::Mysql | EngineKind::Mariadb) {
+                    "mysql://user:password@host:3306/database"
+                } else {
+                    CONNECTION_STRING_PLACEHOLDER
+                };
+                input.set_placeholder(placeholder, window, cx);
+            });
+        }
+        self.engine = engine;
+        let host_placeholder = if matches!(engine, EngineKind::Mysql | EngineKind::Mariadb) {
+            "Host or socket file"
+        } else {
+            "Host or socket directory"
+        };
+        self.host.update(cx, |input, cx| {
+            input.set_placeholder(host_placeholder, window, cx)
+        });
+        self.refresh_name_placeholder(window, cx);
+        cx.notify();
+    }
+
+    fn show_details(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.step = Step::Details;
+        self.status = None;
+        self.name.update(cx, |input, cx| input.focus(window, cx));
+        cx.notify();
+    }
+
+    fn show_engines(&mut self, cx: &mut Context<Self>) {
+        self.step = Step::ChooseEngine;
+        self.status = None;
+        cx.notify();
+    }
+
+    fn set_use_connection_string(
+        &mut self,
+        use_connection_string: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.use_connection_string = use_connection_string;
+        self.status = None;
+
+        if use_connection_string {
+            self.connection_string
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
+
+        cx.notify();
     }
 
     fn on_address_event(
@@ -285,15 +415,28 @@ impl ConnectionForm {
         }
 
         let text = Self::text(&self.connection_string, cx);
-        self.connection_string_feedback = if text.is_empty() {
-            None
+        self.connection_string_state = if text.is_empty() {
+            ConnectionStringState::Empty
         } else {
-            match parse_connection_string(&text) {
-                Ok(parsed) => {
-                    self.apply_connection_string(parsed, window, cx);
-                    Some((CONNECTION_STRING_APPLIED.into(), false))
+            let parsed = if matches!(self.engine, EngineKind::Mysql | EngineKind::Mariadb) {
+                parse_mysql_connection_string(&text).map(|parsed| {
+                    let options = if self.engine == EngineKind::Mariadb {
+                        ConnectionOptions::Mariadb(parsed.options)
+                    } else {
+                        ConnectionOptions::Mysql(parsed.options)
+                    };
+                    (options, parsed.password)
+                })
+            } else {
+                parse_connection_string(&text)
+                    .map(|parsed| (ConnectionOptions::Postgres(parsed.options), parsed.password))
+            };
+            match parsed {
+                Ok((options, password)) => {
+                    self.apply_connection_string(options, password, window, cx);
+                    ConnectionStringState::Applied
                 }
-                Err(error) => Some((error.to_string().into(), true)),
+                Err(error) => ConnectionStringState::Invalid(error.to_string().into()),
             }
         };
         cx.notify();
@@ -301,31 +444,20 @@ impl ConnectionForm {
 
     fn apply_connection_string(
         &mut self,
-        parsed: ParsedConnectionString,
+        options: ConnectionOptions,
+        password: Option<Secret>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let password = parsed
-            .password
+        let password = password
             .as_ref()
             .map(|secret| secret.expose().to_owned())
             .unwrap_or_default();
 
-        self.select_engine(parsed.options.engine(), window, cx);
         self.password
             .update(cx, |input, cx| input.set_value(password, window, cx));
-        self.fill(parsed.options, window, cx);
+        self.fill(options, window, cx);
         self.refresh_name_placeholder(window, cx);
-    }
-
-    fn select_engine(&mut self, engine: EngineKind, window: &mut Window, cx: &mut Context<Self>) {
-        let index = ENGINES
-            .iter()
-            .position(|candidate| *candidate == engine)
-            .unwrap_or_default();
-        self.engine_select.update(cx, |select, cx| {
-            select.set_selected_index(Some(IndexPath::new(index)), window, cx)
-        });
     }
 
     /// The name used when the field is left empty on a new connection.
@@ -334,11 +466,13 @@ impl ConnectionForm {
             return None;
         }
 
-        let address = match self.engine(cx) {
-            EngineKind::Postgres => Self::text(&self.host, cx),
+        let address = match self.engine {
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Mariadb => {
+                Self::text(&self.host, cx)
+            }
             EngineKind::Sqlite => Self::text(&self.sqlite_path, cx),
         };
-        default_name(self.engine(cx), &address)
+        default_name(self.engine, &address)
     }
 
     fn refresh_name_placeholder(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -356,13 +490,12 @@ impl ConnectionForm {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let model = self.model.read(cx);
-        let manifest = Arc::clone(model.manifest());
+        let manifest = Arc::clone(self.model.read(cx).manifest());
         let Some(alias) = manifest.connection(connection).cloned() else {
             return;
         };
 
-        self.select_engine(alias.engine, window, cx);
+        self.engine = alias.engine;
         self.name.update(cx, |input, cx| {
             input.set_value(alias.name.clone(), window, cx)
         });
@@ -376,6 +509,11 @@ impl ConnectionForm {
 
             this.update_in(cx, |this, window, cx| {
                 this.has_stored_password = binding.credentials.password.is_some();
+                if this.has_stored_password {
+                    this.password.update(cx, |input, cx| {
+                        input.set_placeholder(STORED_PASSWORD_PLACEHOLDER, window, cx)
+                    });
+                }
                 this.fill(binding.descriptor.options, window, cx);
                 cx.notify();
             })
@@ -392,33 +530,21 @@ impl ConnectionForm {
             input.update(cx, |input, cx| input.set_value(value, window, cx));
         };
 
-        match options {
-            ConnectionOptions::Postgres(options) => {
-                set(&self.host, options.host, window, cx);
-                set(&self.port, options.port.to_string(), window, cx);
-                set(&self.user, options.user, window, cx);
-                set(&self.database, options.database, window, cx);
-
-                let (tls, ca_file) = match options.tls {
-                    TlsMode::Disable => (Tls::Disabled, None),
-                    TlsMode::VerifyFull { ca_file: None } => (Tls::Verify, None),
-                    TlsMode::VerifyFull {
-                        ca_file: Some(path),
-                    } => (Tls::VerifyWithCa, Some(path)),
-                };
-                let index = match tls {
-                    Tls::Verify => 0,
-                    Tls::VerifyWithCa => 1,
-                    Tls::Disabled => 2,
-                };
-                self.tls_select.update(cx, |select, cx| {
-                    select.set_selected_index(Some(IndexPath::new(index)), window, cx)
-                });
-
-                if let Some(path) = ca_file {
-                    set(&self.ca_file, path.display().to_string(), window, cx);
-                }
-            }
+        let (host, port, user, database, tls) = match options {
+            ConnectionOptions::Postgres(options) => (
+                options.host,
+                options.port,
+                options.user,
+                options.database,
+                options.tls,
+            ),
+            ConnectionOptions::Mysql(options) | ConnectionOptions::Mariadb(options) => (
+                options.host,
+                options.port,
+                options.user,
+                options.database,
+                options.tls,
+            ),
             ConnectionOptions::Sqlite(options) => {
                 set(
                     &self.sqlite_path,
@@ -427,16 +553,26 @@ impl ConnectionForm {
                     cx,
                 );
                 self.enforce_foreign_keys = options.enforce_foreign_keys;
+                return;
             }
+        };
+        set(&self.host, host, window, cx);
+        set(&self.port, port.to_string(), window, cx);
+        set(&self.user, user, window, cx);
+        set(&self.database, database, window, cx);
+        let (index, ca_file) = match tls {
+            TlsMode::Disable => (2, None),
+            TlsMode::VerifyFull { ca_file: None } => (0, None),
+            TlsMode::VerifyFull {
+                ca_file: Some(path),
+            } => (1, Some(path)),
+        };
+        self.tls_select.update(cx, |select, cx| {
+            select.set_selected_index(Some(IndexPath::new(index)), window, cx)
+        });
+        if let Some(path) = ca_file {
+            set(&self.ca_file, path.display().to_string(), window, cx);
         }
-    }
-
-    fn engine(&self, cx: &App) -> EngineKind {
-        self.engine_select
-            .read(cx)
-            .selected_index(cx)
-            .and_then(|index| ENGINES.get(index.row).copied())
-            .unwrap_or(EngineKind::Postgres)
     }
 
     fn tls(&self, cx: &App) -> Tls {
@@ -457,8 +593,19 @@ impl ConnectionForm {
     }
 
     fn options(&self, cx: &App) -> Result<ConnectionOptions, SharedString> {
-        match self.engine(cx) {
-            EngineKind::Postgres => {
+        match self.engine {
+            EngineKind::Postgres | EngineKind::Mysql | EngineKind::Mariadb => {
+                // A parsed string has already filled the fields read below.
+                if self.use_connection_string {
+                    match &self.connection_string_state {
+                        ConnectionStringState::Empty => {
+                            return Err(MISSING_CONNECTION_STRING.into());
+                        }
+                        ConnectionStringState::Invalid(error) => return Err(error.clone()),
+                        ConnectionStringState::Applied => {}
+                    }
+                }
+
                 let port = Self::text(&self.port, cx)
                     .parse::<u16>()
                     .map_err(|_| SharedString::from("Enter a port between 1 and 65535"))?;
@@ -470,6 +617,21 @@ impl ConnectionForm {
                     Tls::Disabled => TlsMode::Disable,
                 };
 
+                if matches!(self.engine, EngineKind::Mysql | EngineKind::Mariadb) {
+                    let options = MysqlOptions {
+                        host: Self::text(&self.host, cx),
+                        port,
+                        user: Self::text(&self.user, cx),
+                        database: Self::text(&self.database, cx),
+                        tls,
+                        connect_timeout: Some(CONNECT_TIMEOUT),
+                    };
+                    return Ok(if self.engine == EngineKind::Mariadb {
+                        ConnectionOptions::Mariadb(options)
+                    } else {
+                        ConnectionOptions::Mysql(options)
+                    });
+                }
                 Ok(ConnectionOptions::Postgres(PostgresOptions {
                     host: Self::text(&self.host, cx),
                     port,
@@ -500,7 +662,7 @@ impl ConnectionForm {
             return Err(issue.message.clone().into());
         }
 
-        let password = Self::text(&self.password, cx);
+        let password = self.password.read(cx).value().to_string();
         let secret = (!password.is_empty()).then(|| Secret::new(password));
         Ok((options, secret))
     }
@@ -680,7 +842,7 @@ impl ConnectionForm {
     /// Creating a database file is its own action; opening never creates.
     fn create_sqlite_file(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let directory = self.model.read(cx).directory();
-        let prompt = cx.prompt_for_new_path(&directory, Some("database.sqlite"));
+        let prompt = cx.prompt_for_new_path(&directory, Some(NEW_SQLITE_FILE_NAME));
 
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(path))) = prompt.await else {
@@ -712,9 +874,11 @@ fn default_name(engine: EngineKind, address: &str) -> Option<String> {
     let prefix = match engine {
         EngineKind::Postgres => "postgres",
         EngineKind::Sqlite => "sqlite",
+        EngineKind::Mysql => "mysql",
+        EngineKind::Mariadb => "mariadb",
     };
     let target = match engine {
-        EngineKind::Postgres => Some(address),
+        EngineKind::Postgres | EngineKind::Mysql | EngineKind::Mariadb => Some(address),
         EngineKind::Sqlite => Path::new(address)
             .file_name()
             .and_then(|name| name.to_str()),
@@ -737,126 +901,29 @@ pub(crate) fn field(label: &'static str, control: impl IntoElement, cx: &App) ->
         .child(control)
 }
 
+/// The optional title and description shown above a step's content.
+fn render_step_heading(
+    title: Option<SharedString>,
+    description: &'static str,
+    cx: &App,
+) -> impl IntoElement {
+    v_flex()
+        .gap_1()
+        .children(title.map(|title| div().text_base().font_semibold().child(title)))
+        .child(
+            div()
+                .text_sm()
+                .text_color(cx.theme().muted_foreground)
+                .child(description),
+        )
+}
+
 impl Render for ConnectionForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let engine = self.engine(cx);
-        let tls = self.tls(cx);
-        let password_placeholder = if self.has_stored_password {
-            "Leave empty to keep the saved password"
-        } else {
-            "Password"
-        };
-
-        v_flex()
-            .gap_3()
-            .when(self.editing.is_none(), |this| {
-                this.child(field(
-                    "Connection string",
-                    Input::new(&self.connection_string)
-                        .id("connection-string")
-                        .aria_label("Connection string")
-                        .mask_toggle(),
-                    cx,
-                ))
-                .when_some(self.connection_string_feedback.clone(), |this, (message, is_error)| {
-                    this.child(
-                        div()
-                            .id("connection-string-feedback")
-                            .text_xs()
-                            .text_color(if is_error { cx.theme().danger } else { cx.theme().muted_foreground })
-                            .aria_label(message.clone())
-                            .child(message)
-                            .test_support(),
-                    )
-                })
-            })
-            .child(field("Name", Input::new(&self.name).id("connection-name").aria_label("Name"), cx))
-            .when(self.editing.is_none(), |this| {
-                this.child(field("Engine", Select::new(&self.engine_select).id("connection-engine").accessibility_label("Engine"), cx))
-            })
-            .when(engine == EngineKind::Postgres, |this| {
-                this.child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().flex_1().child(field("Host", Input::new(&self.host).id("connection-host").aria_label("Host"), cx)))
-                        .child(div().w_24().child(field("Port", Input::new(&self.port).id("connection-port").aria_label("Port"), cx))),
-                )
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(div().flex_1().child(field("User", Input::new(&self.user).id("connection-user").aria_label("User"), cx)))
-                        .child(div().flex_1().child(field("Database", Input::new(&self.database).id("connection-database").aria_label("Database"), cx))),
-                )
-                .child(field("Password", Input::new(&self.password).id("connection-password").aria_label("Password"), cx))
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(cx.theme().muted_foreground)
-                        .child(password_placeholder),
-                )
-                .child(field("Encryption", Select::new(&self.tls_select).id("connection-encryption").accessibility_label("Encryption"), cx))
-                .when(tls == Tls::VerifyWithCa, |this| {
-                    this.child(field("CA certificate", Input::new(&self.ca_file).id("connection-ca-file").aria_label("CA certificate"), cx))
-                })
-                .when(tls == Tls::Disabled, |this| {
-                    this.child(
-                        div()
-                            .text_xs()
-                            .text_color(cx.theme().warning)
-                            .child("Without encryption, passwords and data travel in plain text. Use only for local servers."),
-                    )
-                })
-            })
-            .when(engine == EngineKind::Sqlite, |this| {
-                this.child(field(
-                    "Database file",
-                    h_flex()
-                        .gap_2()
-                        .child(div().flex_1().child(Input::new(&self.sqlite_path).id("connection-file").aria_label("Database file")))
-                        .child(
-                            Button::new("choose-file")
-                                .outline()
-                                .small()
-                                .label("Choose…")
-                                .on_click(cx.listener(|this, _, window, cx| this.choose_sqlite_file(window, cx))),
-                        )
-                        .child(
-                            Button::new("create-file")
-                                .ghost()
-                                .small()
-                                .label("New File…")
-                                .on_click(cx.listener(|this, _, window, cx| this.create_sqlite_file(window, cx))),
-                        ),
-                    cx,
-                ))
-                .child(
-                    Checkbox::new("foreign-keys")
-                        .label("Enforce foreign keys")
-                        .checked(self.enforce_foreign_keys)
-                        .on_click(cx.listener(|this, checked: &bool, _, cx| {
-                            this.enforce_foreign_keys = *checked;
-                            cx.notify();
-                        })),
-                )
-            })
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(cx.theme().muted_foreground)
-                    .child("The workspace shares only this connection's name. The address, file, and password stay on this computer."),
-            )
-            .when_some(self.status.clone(), |this, (message, is_error)| {
-                this.child(
-                    div()
-                        .id("connection-status")
-                        .text_sm()
-                        .text_color(if is_error { cx.theme().danger } else { cx.theme().success })
-                        .role(Role::Status)
-                        .aria_label(message.clone())
-                        .child(message)
-                        .test_support(),
-                )
-            })
+        match self.step {
+            Step::ChooseEngine => self.render_engine_picker(cx).into_any_element(),
+            Step::Details => self.render_details(cx).into_any_element(),
+        }
     }
 }
 

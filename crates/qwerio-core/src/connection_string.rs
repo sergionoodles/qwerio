@@ -1,20 +1,16 @@
-//! Parsing pasted connection URLs, such as a `DATABASE_URL` value, into
-//! connection options.
+//! Parsing pasted PostgreSQL, MySQL, and MariaDB URLs, such as a `DATABASE_URL`
+//! value, into connection options.
 //!
-//! Accepts `postgres://` and `postgresql://` URLs in the libpq format, and
-//! `sqlite:`/`file:` URLs naming a database file. A leading `jdbc:` prefix or a
-//! whole `.env` line (`DATABASE_URL="…"`) is tolerated so values can be pasted
-//! as they are found.
+//! Accepts `postgres://` and `postgresql://` URLs in the libpq format. A
+//! leading `jdbc:` prefix or a whole `.env` line (`DATABASE_URL="…"`) is
+//! tolerated so values can be pasted as they are found.
 
 use std::fmt;
 use std::path::PathBuf;
 
-use crate::connection::{
-    ConnectionOptions, DEFAULT_POSTGRES_PORT, PostgresOptions, Secret, SqliteOptions, TlsMode,
-};
+use crate::connection::{DEFAULT_POSTGRES_PORT, PostgresOptions, Secret, TlsMode};
 
 const POSTGRES_SCHEMES: [&str; 2] = ["postgres", "postgresql"];
-const SQLITE_SCHEMES: [&str; 3] = ["sqlite", "sqlite3", "file"];
 const JDBC_PREFIX: &str = "jdbc:";
 const EXPORT_PREFIX: &str = "export ";
 const QUOTES: [char; 2] = ['"', '\''];
@@ -26,7 +22,7 @@ const SYSTEM_ROOT_CERT: &str = "system";
 /// Options read from a connection string, with its password kept apart.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParsedConnectionString {
-    pub options: ConnectionOptions,
+    pub options: PostgresOptions,
     pub password: Option<Secret>,
 }
 
@@ -34,30 +30,31 @@ pub struct ParsedConnectionString {
 pub enum ConnectionStringError {
     MissingScheme,
     UnsupportedScheme(String),
+    UnsupportedMysqlScheme(String),
     InvalidPort(String),
     InvalidEscape,
     UnsupportedSslMode(String),
-    MissingPath,
 }
 
 impl fmt::Display for ConnectionStringError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingScheme => formatter.write_str(
-                "Enter a URL such as postgres://user@host/database or sqlite:///path/to/file.db",
-            ),
+            Self::MissingScheme => {
+                formatter.write_str("Enter a URL such as postgres://user@host/database")
+            }
             Self::UnsupportedScheme(scheme) => write!(
                 formatter,
-                "\"{scheme}\" connection strings are not supported. Use postgres:// or sqlite://"
+                "\"{scheme}\" connection strings are not supported. Use postgres://"
+            ),
+            Self::UnsupportedMysqlScheme(scheme) => write!(
+                formatter,
+                "\"{scheme}\" connection strings are not supported here. Use mysql:// or mariadb://"
             ),
             Self::InvalidPort(port) => write!(formatter, "\"{port}\" is not a valid port"),
             Self::InvalidEscape => {
                 formatter.write_str("The connection string contains an invalid %-escape")
             }
             Self::UnsupportedSslMode(mode) => write!(formatter, "Unsupported sslmode \"{mode}\""),
-            Self::MissingPath => {
-                formatter.write_str("The connection string names no database file")
-            }
         }
     }
 }
@@ -78,11 +75,84 @@ pub fn parse_connection_string(
         return parse_postgres(rest);
     }
 
-    if SQLITE_SCHEMES.contains(&scheme.as_str()) {
-        return parse_sqlite(rest);
-    }
-
     Err(ConnectionStringError::UnsupportedScheme(scheme))
+}
+
+/// MySQL/MariaDB endpoint parsed separately to preserve PostgreSQL URL semantics.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParsedMysqlConnectionString {
+    pub options: crate::connection::MysqlOptions,
+    pub password: Option<Secret>,
+}
+
+pub fn parse_mysql_connection_string(
+    input: &str,
+) -> Result<ParsedMysqlConnectionString, ConnectionStringError> {
+    let url = strip_wrapping(input);
+    let url = url.strip_prefix(JDBC_PREFIX).unwrap_or(url);
+    let (scheme, rest) = url
+        .split_once(':')
+        .ok_or(ConnectionStringError::MissingScheme)?;
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "mysql" | "mariadb") {
+        return Err(ConnectionStringError::UnsupportedMysqlScheme(
+            scheme.to_owned(),
+        ));
+    }
+    let mut parts = parse_parts(rest)?;
+    let query = rest.split_once('?').map_or("", |(_, query)| query);
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let key = percent_decode(key)?.to_ascii_lowercase();
+        let value = percent_decode(value)?;
+        match key.as_str() {
+            "ssl-mode" | "sslmode" => {
+                parts.sslmode = Some(match value.to_ascii_lowercase().as_str() {
+                    "disabled" | "disable" => "disable".to_owned(),
+                    "required" | "require" | "verify_ca" | "verify_identity" | "verify-full"
+                    | "verify-ca" => "verify-full".to_owned(),
+                    _ => return Err(ConnectionStringError::UnsupportedSslMode(value)),
+                })
+            }
+            "require_ssl" if value == "true" => parts.sslmode = Some("verify-full".to_owned()),
+            "verify_ca" | "verify_identity" if value != "true" => {
+                return Err(ConnectionStringError::UnsupportedSslMode(
+                    "Certificate verification cannot be disabled".to_owned(),
+                ));
+            }
+            "ssl-ca" => parts.sslrootcert = non_empty(value),
+            _ => {}
+        }
+    }
+    let host = parts
+        .host
+        .unwrap_or_else(|| DEFAULT_POSTGRES_HOST.to_owned());
+    let port = parts
+        .port
+        .map(|port| {
+            port.parse::<u16>()
+                .map_err(|_| ConnectionStringError::InvalidPort(port))
+        })
+        .transpose()?
+        .unwrap_or(crate::connection::DEFAULT_MYSQL_PORT);
+    if port == 0 {
+        return Err(ConnectionStringError::InvalidPort("0".to_owned()));
+    }
+    let tls = tls_mode(
+        parts.sslmode.as_deref(),
+        parts.sslrootcert.map(PathBuf::from),
+        &host,
+    )?;
+    Ok(ParsedMysqlConnectionString {
+        options: crate::connection::MysqlOptions {
+            host,
+            port,
+            user: parts.user.unwrap_or_default(),
+            database: parts.database.unwrap_or_default(),
+            tls,
+            connect_timeout: None,
+        },
+        password: parts.password.map(Secret::new),
+    })
 }
 
 /// Removes surrounding whitespace, quotes, and an `.env` style `NAME=` prefix.
@@ -124,6 +194,10 @@ struct PostgresParts {
 }
 
 fn parse_postgres(rest: &str) -> Result<ParsedConnectionString, ConnectionStringError> {
+    build_postgres(parse_parts(rest)?)
+}
+
+fn parse_parts(rest: &str) -> Result<PostgresParts, ConnectionStringError> {
     let rest = rest.strip_prefix("//").unwrap_or(rest);
     let rest = rest.split_once('#').map_or(rest, |(before, _)| before);
     let (location, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -153,7 +227,7 @@ fn parse_postgres(rest: &str) -> Result<ParsedConnectionString, ConnectionString
     parts.database = non_empty(percent_decode(path)?);
 
     apply_query(&mut parts, query)?;
-    build_postgres(parts)
+    Ok(parts)
 }
 
 /// Splits `host:port`, keeping the colons of a bracketed IPv6 address.
@@ -213,7 +287,7 @@ fn build_postgres(parts: PostgresParts) -> Result<ParsedConnectionString, Connec
     let tls = tls_mode(parts.sslmode.as_deref(), ca_file, &host)?;
 
     Ok(ParsedConnectionString {
-        options: ConnectionOptions::Postgres(PostgresOptions {
+        options: PostgresOptions {
             host,
             port,
             user,
@@ -221,7 +295,7 @@ fn build_postgres(parts: PostgresParts) -> Result<ParsedConnectionString, Connec
             tls,
             connect_timeout: None,
             application_name: None,
-        }),
+        },
         password: parts.password.map(Secret::new),
     })
 }
@@ -245,22 +319,6 @@ fn tls_mode(
 
 fn is_local_host(host: &str) -> bool {
     host.starts_with('/') || host.starts_with("127.") || LOOPBACK_HOSTS.contains(&host)
-}
-
-/// `sqlite:///abs/app.db`, `sqlite://app.db`, `sqlite:app.db`, `file:app.db?mode=ro`.
-fn parse_sqlite(rest: &str) -> Result<ParsedConnectionString, ConnectionStringError> {
-    let location = rest.split_once('?').map_or(rest, |(path, _)| path);
-    let path = location.strip_prefix("//").unwrap_or(location);
-    let path = percent_decode(path)?;
-
-    if path.is_empty() {
-        return Err(ConnectionStringError::MissingPath);
-    }
-
-    Ok(ParsedConnectionString {
-        options: ConnectionOptions::Sqlite(SqliteOptions::new(path)),
-        password: None,
-    })
 }
 
 fn non_empty(text: String) -> Option<String> {

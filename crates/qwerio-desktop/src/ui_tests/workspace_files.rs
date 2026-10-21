@@ -455,14 +455,7 @@ fn encrypted_workspaces_autosave_connection_details_and_keep_drafts_out_of_local
     wait_until(window, cx, "private workspace", |window, _| {
         window.try_find("add-connection").is_some()
     });
-    interact(window, cx, |window, cx| window.click("add-connection", cx));
-    wait_until(window, cx, "connection form", |window, _| {
-        window.try_find("connection-engine").is_some()
-    });
-    choose_option(window, cx, "connection-engine", 1);
-    wait_until(window, cx, "SQLite fields", |window, _| {
-        window.try_find("connection-file").is_some()
-    });
+    start_new_connection(window, cx, "engine-sqlite");
     interact(window, cx, |window, cx| {
         window.click("connection-file", cx);
         window.input(&fixture.database.display().to_string(), cx);

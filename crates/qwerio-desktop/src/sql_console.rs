@@ -24,7 +24,6 @@ use gpui_kit::{
 };
 use qwerio_app::console::{ConsoleState, ExecutionTarget, RunOutcome};
 use qwerio_app::sessions::ConsoleLease;
-use qwerio_core::connection::EngineKind;
 use qwerio_core::driver::QueryRequest;
 use qwerio_core::ids::ConnectionId;
 use qwerio_core::result::RequestEventKind;
@@ -194,25 +193,19 @@ impl SqlConsole {
         self.connection_ids.get(index.row).copied()
     }
 
-    fn selected_engine(&self, cx: &App) -> Option<EngineKind> {
-        let connection = self.selected_connection(cx)?;
-        self.model
-            .read(cx)
-            .manifest()
-            .connection(connection)
-            .map(|alias| alias.engine)
+    fn selected_connection_has_databases(&self, cx: &App) -> bool {
+        self.selected_connection(cx)
+            .and_then(|connection| self.model.read(cx).capabilities(connection))
+            .is_some_and(|capabilities| capabilities.has_databases)
     }
 
     fn target(&self, cx: &App) -> Option<ExecutionTarget> {
         let connection = self.selected_connection(cx)?;
         let access = self.access?;
-        let database = match self.selected_engine(cx) {
-            Some(EngineKind::Postgres) => {
-                let value = self.database_input.read(cx).value().trim().to_owned();
-                (!value.is_empty()).then_some(value)
-            }
-            _ => None,
-        };
+        let database = self
+            .selected_connection_has_databases(cx)
+            .then(|| self.database_input.read(cx).value().trim().to_owned())
+            .filter(|value| !value.is_empty());
 
         Some(ExecutionTarget {
             connection,
@@ -683,7 +676,7 @@ fn describe_run(run: &qwerio_app::console::FinishedRun) -> (SharedString, bool) 
 
 impl Render for SqlConsole {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_postgres = self.selected_engine(cx) == Some(EngineKind::Postgres);
+        let has_databases = self.selected_connection_has_databases(cx);
         let transaction = self.state.transaction();
         let is_running = self.state.is_running();
         let access = self.access;
@@ -715,7 +708,7 @@ impl Render for SqlConsole {
                                 .placeholder("Choose connection"),
                         ),
                     )
-                    .when(is_postgres, |this| {
+                    .when(has_databases, |this| {
                         this.child(div().w_32().child(Input::new(&self.database_input).small()))
                     })
                     .child(

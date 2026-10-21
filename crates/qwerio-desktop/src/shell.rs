@@ -906,7 +906,16 @@ impl WorkspaceShell {
             None => "note".to_owned(),
         };
         let text = match (&object, kind) {
-            (Some(object), DocumentKind::Sql) => templates::select_statement(object),
+            (Some(object), DocumentKind::Sql) => {
+                let engine = self
+                    .model
+                    .read(cx)
+                    .manifest()
+                    .connection(object.connection)
+                    .map(|alias| alias.engine)
+                    .unwrap_or(qwerio_core::connection::EngineKind::Postgres);
+                templates::select_statement_for_engine(object, engine)
+            }
             (Some(object), _) => templates::note(object),
             (None, _) => String::new(),
         };

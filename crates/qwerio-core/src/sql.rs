@@ -120,7 +120,7 @@ impl Predicate {
 }
 
 /// Engine-specific SQL syntax supplied by each adapter.
-pub trait SqlDialect {
+pub trait SqlDialect: Sync {
     /// Quotes an identifier so any name, including reserved words, quotes, and
     /// mixed case, is used verbatim.
     fn quote_identifier(&self, identifier: &str) -> String;
@@ -136,6 +136,24 @@ pub trait SqlDialect {
     /// A case-insensitive LIKE comparing `expression`'s text form with the
     /// pattern placeholder, using `\` as the escape character.
     fn case_insensitive_like(&self, expression: &str, pattern_placeholder: &str) -> String;
+
+    /// Ordering syntax, including an explicit position for NULL values.
+    fn order_expression(
+        &self,
+        expression: &str,
+        direction: SortDirection,
+        nulls: NullsOrder,
+    ) -> String {
+        let direction = match direction {
+            SortDirection::Ascending => "ASC",
+            SortDirection::Descending => "DESC",
+        };
+        let nulls = match nulls {
+            NullsOrder::First => "NULLS FIRST",
+            NullsOrder::Last => "NULLS LAST",
+        };
+        format!("{expression} {direction} {nulls}")
+    }
 
     /// An expression selected alongside a row to capture an ordering key for
     /// continuation. It must round-trip through [`Self::placeholder`].
@@ -270,16 +288,9 @@ impl<'a> SqlRenderer<'a> {
 
     pub fn render_order_term(&self, term: &OrderTerm) -> DbResult<String> {
         let expression = self.column_expression(&term.column)?;
-        let direction = match term.direction {
-            SortDirection::Ascending => "ASC",
-            SortDirection::Descending => "DESC",
-        };
-        let nulls = match term.nulls {
-            NullsOrder::First => "NULLS FIRST",
-            NullsOrder::Last => "NULLS LAST",
-        };
-
-        Ok(format!("{expression} {direction} {nulls}"))
+        Ok(self
+            .dialect
+            .order_expression(&expression, term.direction, term.nulls))
     }
 
     /// A key column for continuation, under a unique alias.

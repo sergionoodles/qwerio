@@ -16,12 +16,13 @@ path = "src/main.rs"
 chrono = { version = "0.4", default-features = false }
 directories = "6.0"
 gpui-kit = { workspace = true, features = ["tree-sitter-sql", "tree-sitter-markdown"] }
-gpui-tui = { git = "https://github.com/sergionoodles/gpui-tui", tag = "v0.1.0", optional = true }
+gpui-tui = { git = "https://github.com/sergionoodles/gpui-tui", tag = "v0.2.0", optional = true }
 keyring = "4.2"
 notify = "8.2"
 qwerio-app.workspace = true
 qwerio-core.workspace = true
 qwerio-postgres.workspace = true
+qwerio-mysql.workspace = true
 qwerio-sqlite.workspace = true
 qwerio-workspace.workspace = true
 serde = { version = "1.0.228", features = ["derive"] }

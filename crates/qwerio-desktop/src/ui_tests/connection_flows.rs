@@ -8,13 +8,16 @@ use super::*;
 
 /// Left empty, the name defaults to the engine and the database file.
 const NEW_CONNECTION_NAME: &str = "sqlite@shop.sqlite";
-/// The engine list starts on PostgreSQL; SQLite is next.
-const POSTGRES_TO_SQLITE_STEPS: usize = 1;
 
-fn assert_footer_alignment(window: AnyWindowHandle, cx: &mut TestAppContext) {
+/// `leading` is the footer's left button: Cancel when editing, Back in the wizard.
+fn assert_footer_alignment(
+    window: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    leading: &'static str,
+) {
     interact(window, cx, |window, _| {
         let name = window.find("connection-name").bounds();
-        let cancel = window.find("cancel-connection").bounds();
+        let cancel = window.find(leading).bounds();
         let test = window.find("test-connection").bounds();
         let save = window.find("save-connection").bounds();
 
@@ -70,7 +73,7 @@ fn open_sidebar_connection_settings(fixture: &Fixture, cx: &mut TestAppContext) 
 fn edits_a_connection_from_the_sidebar(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let window = open_sidebar_connection_settings(&fixture, cx);
-    assert_footer_alignment(window, cx);
+    assert_footer_alignment(window, cx, "cancel-connection");
     let original = Workspace::open(&fixture.root).expect("workspace");
     let connection = original.manifest().connections[0].id;
     let replacement = fixture.database.with_file_name("replacement.sqlite");
@@ -152,15 +155,8 @@ fn adds_a_sqlite_connection_through_the_dialog(cx: &mut TestAppContext) {
         label_of(window, "status").as_deref() == Some("2 items")
     });
 
-    interact(window, cx, |window, cx| window.click("add-connection", cx));
-    wait_until(window, cx, "the dialog opens", |window, _| {
-        window.try_find("connection-engine").is_some()
-    });
-    assert_footer_alignment(window, cx);
-    choose_option(window, cx, "connection-engine", POSTGRES_TO_SQLITE_STEPS);
-    wait_until(window, cx, "SQLite is chosen", |window, _| {
-        window.try_find("connection-file").is_some()
-    });
+    start_new_connection(window, cx, "engine-sqlite");
+    assert_footer_alignment(window, cx, "connection-back");
 
     let database = fixture.database.display().to_string();
     interact(window, cx, |window, cx| {
@@ -200,12 +196,27 @@ fn fills_the_form_from_a_pasted_connection_string(cx: &mut TestAppContext) {
     wait_until(window, cx, "the workspace root is listed", |window, _| {
         label_of(window, "status").as_deref() == Some("2 items")
     });
+    start_new_connection(window, cx, "engine-postgres");
 
-    interact(window, cx, |window, cx| window.click("add-connection", cx));
-    wait_until(window, cx, "the dialog opens", |window, _| {
-        window.try_find("connection-string").is_some()
+    interact(window, cx, |window, cx| {
+        assert!(window.try_find("connection-string").is_none());
+        window.click("use-connection-string", cx);
     });
-    choose_option(window, cx, "connection-engine", POSTGRES_TO_SQLITE_STEPS);
+    wait_until(
+        window,
+        cx,
+        "the connection string replaces the fields",
+        |window, _| {
+            window.try_find("connection-string").is_some()
+                && window.try_find("connection-host").is_none()
+        },
+    );
+    interact(window, cx, |window, cx| window.click("save-connection", cx));
+    wait_until(window, cx, "an empty string is rejected", |window, _| {
+        label_of(window, "connection-status")
+            .is_some_and(|label| label.starts_with("Paste a connection string"))
+    });
+
     interact(window, cx, |window, cx| {
         window.click("connection-string", cx);
         window.input(INVALID_URL, cx);
@@ -224,52 +235,123 @@ fn fills_the_form_from_a_pasted_connection_string(cx: &mut TestAppContext) {
         window.press("ctrl-a", cx);
         window.input(POSTGRES_URL, cx);
     });
-    wait_until(
-        window,
-        cx,
-        "the PostgreSQL fields are filled",
-        |window, _| {
-            window
-                .try_find("connection-host")
-                .is_some_and(|field| field.value() == Some("db.example.com"))
-        },
-    );
-    interact(window, cx, |window, _| {
+    wait_until(window, cx, "the string is read", |window, _| {
+        label_of(window, "connection-string-feedback")
+            .is_some_and(|label| label.starts_with("Details filled in"))
+    });
+    interact(window, cx, |window, cx| {
+        window.click("use-connection-string", cx)
+    });
+    wait_until(window, cx, "the filled fields return", |window, _| {
+        window
+            .try_find("connection-host")
+            .is_some_and(|field| field.value() == Some("db.example.com"))
+    });
+    interact(window, cx, |window, cx| {
         assert_eq!(window.find("connection-port").value(), Some("6543"));
         assert_eq!(window.find("connection-user").value(), Some("app"));
         assert_eq!(window.find("connection-database").value(), Some("shop"));
+        window.click("connection-back", cx);
     });
 
-    let sqlite_url = format!("sqlite://{}", fixture.database.display());
+    wait_until(window, cx, "the engine step returns", |window, _| {
+        window.try_find("engine-sqlite").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        window.click("engine-sqlite", cx);
+        window.click("connection-continue", cx);
+    });
+    wait_until(window, cx, "SQLite is chosen", |window, _| {
+        window.try_find("connection-file").is_some()
+    });
+    interact(window, cx, |window, _| {
+        assert!(window.try_find("use-connection-string").is_none());
+        assert!(window.try_find("connection-string").is_none());
+    });
+}
+
+fn adds_mysql_family_connection(
+    engine: EngineKind,
+    engine_id: &'static str,
+    cx: &mut TestAppContext,
+) {
+    let fixture = Fixture::new();
+    init_app(fixture.services.clone(), cx);
+    let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
+    wait_until(window, cx, "workspace loads", |window, _| {
+        label_of(window, "status").as_deref() == Some("2 items")
+    });
+    start_new_connection(window, cx, engine_id);
+    interact(window, cx, |window, cx| {
+        assert_eq!(window.find("connection-port").value(), Some("3306"));
+        window.click("use-connection-string", cx);
+    });
+    wait_until(window, cx, "URL field appears", |window, _| {
+        window.try_find("connection-string").is_some()
+    });
     interact(window, cx, |window, cx| {
         window.click("connection-string", cx);
-        window.press("ctrl-a", cx);
-        window.input(&sqlite_url, cx);
+        window.input(
+            "mysql://app:%20private%20password%20@localhost:3307/shop",
+            cx,
+        );
     });
-    let database = fixture.database.display().to_string();
-    wait_until(window, cx, "the SQLite file is filled", |window, _| {
-        window
-            .try_find("connection-file")
-            .is_some_and(|field| field.value() == Some(database.as_str()))
+    wait_until(window, cx, "URL applies", |window, _| {
+        label_of(window, "connection-string-feedback")
+            .is_some_and(|text| text.starts_with("Details filled in"))
     });
-    interact(window, cx, |window, cx| window.click("save-connection", cx));
-    wait_until(window, cx, "the dialog closes", |window, _| {
+    interact(window, cx, |window, cx| {
+        window.click("use-connection-string", cx)
+    });
+    wait_until(window, cx, "fields return", |window, _| {
+        window.try_find("connection-host").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        assert_eq!(window.find("connection-host").value(), Some("localhost"));
+        assert_eq!(window.find("connection-port").value(), Some("3307"));
+        assert_eq!(window.find("connection-user").value(), Some("app"));
+        assert_eq!(window.find("connection-database").value(), Some("shop"));
+        window.click("save-connection", cx);
+    });
+    wait_until(window, cx, "connection saves", |window, _| {
         window.try_find("connection-name").is_none()
     });
-
     let workspace = Workspace::open(&fixture.root).expect("workspace");
-    let added = workspace
+    let alias = workspace
         .manifest()
         .connections
         .iter()
-        .find(|connection| connection.name == NEW_CONNECTION_NAME)
-        .expect("the manifest lists the new connection");
+        .find(|alias| alias.engine == engine)
+        .expect("server connection");
     let resolved = fixture
         .services
-        .resolve_connection(workspace.manifest(), added.id)
-        .expect("saved connection");
-    let ConnectionOptions::Sqlite(options) = resolved.descriptor.options else {
-        panic!("the connection must be SQLite");
+        .resolve_connection(workspace.manifest(), alias.id)
+        .expect("saved endpoint");
+    assert_eq!(resolved.descriptor.engine(), engine);
+    let (ConnectionOptions::Mysql(options) | ConnectionOptions::Mariadb(options)) =
+        resolved.descriptor.options
+    else {
+        panic!("server options");
     };
-    assert_eq!(options.path, fixture.database);
+    assert_eq!(options.host, "localhost");
+    assert_eq!(options.port, 3307);
+    assert_eq!(options.database, "shop");
+    assert_eq!(
+        resolved
+            .credentials
+            .password
+            .as_ref()
+            .map(|secret| secret.expose()),
+        Some(" private password ")
+    );
+}
+
+#[gpui_kit::test]
+fn adds_a_mysql_connection_with_url_and_persists_it(cx: &mut TestAppContext) {
+    adds_mysql_family_connection(EngineKind::Mysql, "engine-mysql", cx);
+}
+
+#[gpui_kit::test]
+fn adds_a_mariadb_connection_with_url_and_persists_it(cx: &mut TestAppContext) {
+    adds_mysql_family_connection(EngineKind::Mariadb, "engine-mariadb", cx);
 }

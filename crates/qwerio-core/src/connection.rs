@@ -17,6 +17,8 @@ use crate::ids::ConnectionId;
 pub enum EngineKind {
     Postgres,
     Sqlite,
+    Mysql,
+    Mariadb,
 }
 
 impl EngineKind {
@@ -24,7 +26,17 @@ impl EngineKind {
         match self {
             Self::Postgres => "PostgreSQL",
             Self::Sqlite => "SQLite",
+            Self::Mysql => "MySQL",
+            Self::Mariadb => "MariaDB",
         }
+    }
+
+    pub fn quote_identifier(self, identifier: &str) -> String {
+        if matches!(self, Self::Mysql | Self::Mariadb) {
+            return format!("`{}`", identifier.replace('`', "``"));
+        }
+
+        crate::sql::quote_identifier_ansi(identifier)
     }
 }
 
@@ -53,6 +65,8 @@ impl ConnectionDescriptor {
 pub enum ConnectionOptions {
     Postgres(PostgresOptions),
     Sqlite(SqliteOptions),
+    Mysql(MysqlOptions),
+    Mariadb(MysqlOptions),
 }
 
 impl ConnectionOptions {
@@ -60,8 +74,24 @@ impl ConnectionOptions {
         match self {
             Self::Postgres(_) => EngineKind::Postgres,
             Self::Sqlite(_) => EngineKind::Sqlite,
+            Self::Mysql(_) => EngineKind::Mysql,
+            Self::Mariadb(_) => EngineKind::Mariadb,
         }
     }
+}
+
+pub const DEFAULT_MYSQL_PORT: u16 = 3306;
+
+/// Shared endpoint options for MySQL and MariaDB. A socket is an absolute file path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MysqlOptions {
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub database: String,
+    pub tls: TlsMode,
+    #[serde(default, with = "duration_seconds")]
+    pub connect_timeout: Option<Duration>,
 }
 
 pub const DEFAULT_POSTGRES_PORT: u16 = 5432;

@@ -91,7 +91,7 @@ pub async fn apply_schema_change(
     connection: ResolvedConnection,
     change: &SchemaChange,
 ) -> DbResult<()> {
-    let sql = change.render()?;
+    let sql = change.render_for_engine(connection.descriptor.engine())?;
     let lease = sessions
         .open_console(
             connection.descriptor,
