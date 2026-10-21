@@ -9,11 +9,13 @@ mod graph;
 pub(crate) use graph::node_widths;
 mod icon_label;
 
+use gpui_kit::assets::IconName as LucideIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::menu::{ContextMenuExt as _, PopupMenu, PopupMenuItem};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{
-    ActiveTheme as _, IconName, Sizable as _, StyledExt as _, h_flex, v_flex,
+    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, tooltip::Tooltip,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -57,6 +59,7 @@ pub const EXPLORER_CONTEXT: &str = "Explorer";
 /// Added to the explorer's key context while it shows the graph, so zoom
 /// keys win over the workbench's text size keys only there.
 const GRAPH_CONTEXT: &str = "graph";
+const NO_ACCESS_LABEL: &str = "No access";
 
 pub fn bind_keys(cx: &mut App) {
     let context = Some(EXPLORER_CONTEXT);
@@ -515,16 +518,44 @@ impl ExplorerView {
         .item(refresh)
     }
 
-    fn render_status_badge(entry: &ExplorerEntry, cx: &App) -> Option<impl IntoElement> {
+    fn render_status_badge(entry: &ExplorerEntry, cx: &App) -> Option<AnyElement> {
         let (label, color) = match entry.status {
             EntryStatus::Ready => return None,
-            EntryStatus::NoPrivilege => ("No access", cx.theme().muted_foreground),
+            EntryStatus::NoPrivilege => return Some(Self::render_no_access_badge(entry, cx)),
             EntryStatus::MissingFile => ("File missing", cx.theme().warning),
             EntryStatus::Untracked => ("Not in workspace", cx.theme().muted_foreground),
             EntryStatus::Unbound => ("Not set up", cx.theme().warning),
         };
 
-        Some(div().text_xs().text_color(color).child(label))
+        Some(
+            div()
+                .text_xs()
+                .text_color(color)
+                .child(label)
+                .into_any_element(),
+        )
+    }
+
+    fn render_no_access_badge(entry: &ExplorerEntry, cx: &App) -> AnyElement {
+        div()
+            .id(SharedString::from(format!("{}-no-access", entry.key)))
+            .flex_shrink_0()
+            .child(
+                Icon::new(LucideIcon::Ban)
+                    .xsmall()
+                    .text_color(cx.theme().muted_foreground),
+            )
+            .tooltip(|window, cx| Tooltip::new(NO_ACCESS_LABEL).build(window, cx))
+            .aria_label(NO_ACCESS_LABEL)
+            .into_any_element()
+    }
+
+    fn render_entry_icon(entry: &ExplorerEntry, cx: &App) -> Icon {
+        let icon = entry_icon(entry.kind, cx);
+        if is_muted(entry) {
+            return icon.text_color(cx.theme().muted_foreground);
+        }
+        icon
     }
 
     fn render_detail_row(
@@ -534,10 +565,7 @@ impl ExplorerView {
         is_selected: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let is_muted = matches!(
-            entry.status,
-            EntryStatus::NoPrivilege | EntryStatus::Untracked
-        );
+        let is_muted = is_muted(&entry);
         h_flex()
             .id(SharedString::from(entry.key.clone()))
             .w_full()
@@ -553,7 +581,7 @@ impl ExplorerView {
                 row.hover(|style| style.bg(cx.theme().list_hover))
             })
             .when(is_muted, |row| row.text_color(cx.theme().muted_foreground))
-            .child(entry_icon(entry.kind, cx).small())
+            .child(Self::render_entry_icon(&entry, cx).small())
             .child(
                 div()
                     .flex_1()
@@ -605,7 +633,10 @@ impl ExplorerView {
             .when(!is_selected, |tile| {
                 tile.hover(|style| style.bg(cx.theme().list_hover))
             })
-            .child(entry_icon(entry.kind, cx).large())
+            .when(is_muted(&entry), |tile| {
+                tile.text_color(cx.theme().muted_foreground)
+            })
+            .child(Self::render_entry_icon(&entry, cx).large())
             .child(icon_label::render(&entry.name, window))
             .children(Self::render_status_badge(&entry, cx))
             .on_any_mouse_down(cx.listener(move |this, _, _, _| {
@@ -811,4 +842,11 @@ impl Render for ExplorerView {
                 }
             })
     }
+}
+
+fn is_muted(entry: &ExplorerEntry) -> bool {
+    matches!(
+        entry.status,
+        EntryStatus::NoPrivilege | EntryStatus::Untracked
+    )
 }

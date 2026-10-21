@@ -6,7 +6,9 @@ use gpui_kit::test::TestWindowExt as _;
 fn open_file_menu(cx: &mut TestAppContext) -> (Fixture, AnyWindowHandle) {
     let fixture = Fixture::new();
     init_app(fixture.services.clone(), cx);
-    cx.update(crate::actions::set_menus);
+    // Terminal backends do not retain native menus. The toolbar must still
+    // expose commands and dispatch them to the workbench.
+    cx.update(|cx| cx.set_menus(Vec::new()));
     let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
     wait_until(window, cx, "the toolbar", |window, _| {
         window.try_find("application-menu").is_some()
@@ -19,6 +21,12 @@ fn open_file_menu(cx: &mut TestAppContext) -> (Fixture, AnyWindowHandle) {
     });
     interact(window, cx, |window, cx| {
         let mut menu = window.within("popup-menu");
+        for (index, name) in ["Qwerio", "File", "Go", "Query", "View"]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(menu.find(index).label(), Some(name));
+        }
         assert_eq!(menu.find(1_usize).label(), Some("File"));
         menu.click(1_usize, cx);
     });
@@ -108,5 +116,33 @@ fn file_menu_opens_a_workspace_and_cancel_keeps_it_open(cx: &mut TestAppContext)
     cx.simulate_path_prompt_response(|_| None);
     interact(window, cx, |window, _| {
         assert_eq!(label_of(window, "place-root").as_deref(), Some("Other"));
+    });
+}
+
+#[gpui_kit::test]
+fn breadcrumb_workspace_menu_opens_a_workspace(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    init_app(fixture.services.clone(), cx);
+    let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
+    let path = fixture.root.with_file_name("Other.qwerio");
+    Workspace::create_file(&path, "Other", None).expect("workspace to open");
+    wait_until(window, cx, "the breadcrumb", |window, _| {
+        window.try_find("workspace-menu").is_some()
+    });
+
+    interact(window, cx, |window, cx| window.click("workspace-menu", cx));
+    wait_until(window, cx, "the workspace menu", |window, _| {
+        window.try_find("popup-menu").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        let mut menu = window.within("popup-menu");
+        assert_eq!(menu.find(0_usize).label(), Some("New Workspace…"));
+        assert_eq!(menu.find(1_usize).label(), Some("Open Workspace…"));
+        menu.click(1_usize, cx);
+    });
+    super::workspace_files::wait_for_picker(cx, false);
+    cx.simulate_path_prompt_response(|_| Some(vec![path]));
+    wait_until(window, cx, "selected workspace", |window, _| {
+        label_of(window, "place-root").as_deref() == Some("Other")
     });
 }
