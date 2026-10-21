@@ -16,6 +16,7 @@ path = "src/main.rs"
 chrono = { version = "0.4", default-features = false }
 directories = "6.0"
 gpui-kit = { workspace = true, features = ["tree-sitter-sql", "tree-sitter-markdown"] }
+gpui-tui = { git = "https://github.com/sergionoodles/gpui-tui", tag = "v0.1.0", optional = true }
 keyring = "4.2"
 notify = "8.2"
 qwerio-app.workspace = true
@@ -36,3 +37,7 @@ tempfile = "3.23"
 
 [lints]
 workspace = true
+
+[features]
+# Run inside a kitty-compatible terminal with `qwerio --tui`.
+tui = ["dep:gpui-tui"]

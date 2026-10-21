@@ -9,6 +9,7 @@ pub mod capabilities;
 pub mod catalog;
 pub mod cell_input;
 pub mod connection;
+pub mod connection_string;
 #[cfg(feature = "contract-tests")]
 pub mod contract;
 pub mod ddl;

@@ -25,6 +25,7 @@ use qwerio_core::connection::{
     ConnectionDescriptor, ConnectionOptions, Credentials, DEFAULT_POSTGRES_PORT, EngineKind,
     PostgresOptions, Secret, SqliteOptions, TlsMode,
 };
+use qwerio_core::connection_string::{ParsedConnectionString, parse_connection_string};
 use qwerio_core::ids::ConnectionId;
 
 use crate::workspace_model::{WorkspaceModel, error_text};
@@ -33,6 +34,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const ENGINES: [EngineKind; 2] = [EngineKind::Postgres, EngineKind::Sqlite];
 const TLS_LABELS: [&str; 3] = ["Verify certificate", "Verify with CA file", "No encryption"];
 const NAME_PLACEHOLDER: &str = "Name shown in the workspace";
+const CONNECTION_STRING_PLACEHOLDER: &str = "postgres://user:password@host:5432/database";
+const CONNECTION_STRING_APPLIED: &str = "Filled in from the connection string";
 const NEW_SQLITE_FILE_NAME: &str = "database.sqlite";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,6 +48,9 @@ enum Tls {
 pub struct ConnectionForm {
     model: Entity<WorkspaceModel>,
     editing: Option<ConnectionId>,
+    connection_string: Entity<InputState>,
+    /// The outcome of reading the connection string, and whether it failed.
+    connection_string_feedback: Option<(SharedString, bool)>,
     engine_select: Entity<SelectState<Vec<SharedString>>>,
     tls_select: Entity<SelectState<Vec<SharedString>>>,
     name: Entity<InputState>,
@@ -188,6 +194,12 @@ impl ConnectionForm {
         let tls_select =
             cx.new(|cx| SelectState::new(tls_labels, Some(IndexPath::new(0)), window, cx));
 
+        // Masked because pasted URLs usually carry the password.
+        let connection_string = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(CONNECTION_STRING_PLACEHOLDER)
+                .masked(true)
+        });
         let host = input("Host or socket directory", window, cx);
         let sqlite_path = input("Database file", window, cx);
 
@@ -204,6 +216,7 @@ impl ConnectionForm {
                 &tls_select,
                 |_, _, _: &SelectEvent<Vec<SharedString>>, cx| cx.notify(),
             ),
+            cx.subscribe_in(&connection_string, window, Self::on_connection_string_event),
             cx.subscribe_in(&host, window, Self::on_address_event),
             cx.subscribe_in(&sqlite_path, window, Self::on_address_event),
         ];
@@ -230,6 +243,8 @@ impl ConnectionForm {
             sqlite_path,
             model,
             editing,
+            connection_string,
+            connection_string_feedback: None,
             engine_select,
             tls_select,
             enforce_foreign_keys: true,
@@ -256,6 +271,61 @@ impl ConnectionForm {
         if matches!(event, InputEvent::Change) {
             self.refresh_name_placeholder(window, cx);
         }
+    }
+
+    fn on_connection_string_event(
+        &mut self,
+        _: &Entity<InputState>,
+        event: &InputEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(event, InputEvent::Change) {
+            return;
+        }
+
+        let text = Self::text(&self.connection_string, cx);
+        self.connection_string_feedback = if text.is_empty() {
+            None
+        } else {
+            match parse_connection_string(&text) {
+                Ok(parsed) => {
+                    self.apply_connection_string(parsed, window, cx);
+                    Some((CONNECTION_STRING_APPLIED.into(), false))
+                }
+                Err(error) => Some((error.to_string().into(), true)),
+            }
+        };
+        cx.notify();
+    }
+
+    fn apply_connection_string(
+        &mut self,
+        parsed: ParsedConnectionString,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let password = parsed
+            .password
+            .as_ref()
+            .map(|secret| secret.expose().to_owned())
+            .unwrap_or_default();
+
+        self.select_engine(parsed.options.engine(), window, cx);
+        self.password
+            .update(cx, |input, cx| input.set_value(password, window, cx));
+        self.fill(parsed.options, window, cx);
+        self.refresh_name_placeholder(window, cx);
+    }
+
+    fn select_engine(&mut self, engine: EngineKind, window: &mut Window, cx: &mut Context<Self>) {
+        let index = ENGINES
+            .iter()
+            .position(|candidate| *candidate == engine)
+            .unwrap_or_default();
+        self.engine_select.update(cx, |select, cx| {
+            select.set_selected_index(Some(IndexPath::new(index)), window, cx)
+        });
     }
 
     /// The name used when the field is left empty on a new connection.
@@ -292,13 +362,7 @@ impl ConnectionForm {
             return;
         };
 
-        let engine_index = ENGINES
-            .iter()
-            .position(|engine| *engine == alias.engine)
-            .unwrap_or_default();
-        self.engine_select.update(cx, |select, cx| {
-            select.set_selected_index(Some(IndexPath::new(engine_index)), window, cx)
-        });
+        self.select_engine(alias.engine, window, cx);
         self.name.update(cx, |input, cx| {
             input.set_value(alias.name.clone(), window, cx)
         });
@@ -685,6 +749,27 @@ impl Render for ConnectionForm {
 
         v_flex()
             .gap_3()
+            .when(self.editing.is_none(), |this| {
+                this.child(field(
+                    "Connection string",
+                    Input::new(&self.connection_string)
+                        .id("connection-string")
+                        .aria_label("Connection string")
+                        .mask_toggle(),
+                    cx,
+                ))
+                .when_some(self.connection_string_feedback.clone(), |this, (message, is_error)| {
+                    this.child(
+                        div()
+                            .id("connection-string-feedback")
+                            .text_xs()
+                            .text_color(if is_error { cx.theme().danger } else { cx.theme().muted_foreground })
+                            .aria_label(message.clone())
+                            .child(message)
+                            .test_support(),
+                    )
+                })
+            })
             .child(field("Name", Input::new(&self.name).id("connection-name").aria_label("Name"), cx))
             .when(self.editing.is_none(), |this| {
                 this.child(field("Engine", Select::new(&self.engine_select).id("connection-engine").accessibility_label("Engine"), cx))
