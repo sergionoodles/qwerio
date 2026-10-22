@@ -11,6 +11,7 @@ mod explorer_view;
 mod filter_panel;
 mod grid;
 mod label_dialog;
+mod permissions_dialog;
 mod platform;
 mod schema_dialog;
 mod schema_graph;

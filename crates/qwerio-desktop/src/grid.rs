@@ -7,9 +7,9 @@ use std::sync::Arc;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, v_flex};
 use gpui_kit::{
-    AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div,
-    px,
+    AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _, Pixels,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, TextRun,
+    Window, div, font, px,
 };
 use qwerio_core::display::{CellStyle, DEFAULT_CELL_PREVIEW_CHARS, preview_cell};
 use qwerio_core::result::{ColumnDescriptor, Row};
@@ -21,6 +21,13 @@ const MIN_COLUMN_WIDTH: f32 = 72.;
 const MAX_COLUMN_WIDTH: f32 = 320.;
 const COLUMN_WIDTH_PER_CHARACTER: f32 = 8.;
 const COLUMN_WIDTH_PADDING: f32 = 48.;
+
+/// Grid text is drawn at the table's default size, `text_sm`.
+const GRID_FONT_SIZE_REMS: f32 = 0.875;
+/// A sortable header also holds the sort button: a 0.75rem icon with 2 px of
+/// padding on each side.
+const SORT_ICON_SIZE_REMS: f32 = 0.75;
+const SORT_ICON_PADDING: Pixels = px(4.);
 
 pub fn column_width(name: &str, type_name: &str) -> f32 {
     let characters = name.chars().count().max(type_name.chars().count().min(12)) as f32;
@@ -59,6 +66,85 @@ pub fn render_cell(row_ix: usize, col_ix: usize, value: &Value, cx: &App) -> Any
     };
 
     cell.child(preview.text).test_support().into_any_element()
+}
+
+/// One cell's text as the grid draws it, and the width drawn beside it.
+pub struct DrawnCell {
+    pub text: SharedString,
+    /// Picks the font, as [`render_cell`] does.
+    pub style: CellStyle,
+    /// Width beside the text, such as a checkbox or a tint's padding.
+    pub extra: Pixels,
+}
+
+impl DrawnCell {
+    pub fn preview(value: &Value) -> Self {
+        let preview = preview_cell(value, DEFAULT_CELL_PREVIEW_CHARS);
+
+        Self {
+            text: preview.text.into(),
+            style: preview.style,
+            extra: Pixels::ZERO,
+        }
+    }
+}
+
+/// The width a column needs to show its header and every cell whole, before
+/// the table adds its cell padding.
+pub fn fit_width(
+    header: &str,
+    is_sortable: bool,
+    cells: impl IntoIterator<Item = DrawnCell>,
+    window: &Window,
+    cx: &App,
+) -> Pixels {
+    let rem_size = window.rem_size();
+    let sort_icon = if is_sortable {
+        rem_size * SORT_ICON_SIZE_REMS + SORT_ICON_PADDING
+    } else {
+        Pixels::ZERO
+    };
+    let header = DrawnCell {
+        text: header.to_owned().into(),
+        style: CellStyle::Text,
+        extra: sort_icon,
+    };
+
+    std::iter::once(header)
+        .chain(cells)
+        .map(|cell| text_width(&cell.text, cell.style, window, cx) + cell.extra)
+        .fold(Pixels::ZERO, Pixels::max)
+}
+
+fn text_width(text: &SharedString, style: CellStyle, window: &Window, cx: &App) -> Pixels {
+    let theme = cx.theme();
+    let family = match style {
+        CellStyle::Number | CellStyle::Binary | CellStyle::Unsupported => {
+            theme.mono_font_family.clone()
+        }
+        CellStyle::Null | CellStyle::Boolean | CellStyle::Text => theme.font_family.clone(),
+    };
+    let cell_font = if style == CellStyle::Null {
+        font(family).italic()
+    } else {
+        font(family)
+    };
+    // A shaped line holds no line breaks; the grid draws them as spaces.
+    let line: SharedString = text.replace(['\r', '\n'], " ").into();
+    let run = TextRun {
+        len: line.len(),
+        font: cell_font,
+        color: theme.foreground,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let font_size = window.rem_size() * GRID_FONT_SIZE_REMS;
+
+    window
+        .text_system()
+        .shape_line(line, font_size, &[run], None)
+        .width
 }
 
 /// The text copied for a cell: the full canonical value, or empty for NULL.
@@ -120,6 +206,22 @@ impl TableDelegate for ResultGridDelegate {
             Some(value) => render_cell(row_ix, col_ix, value, cx),
             None => div().into_any_element(),
         }
+    }
+
+    fn fit_column(
+        &mut self,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Option<Pixels> {
+        let header = &self.columns.get(col_ix)?.name;
+        let cells = self
+            .rows
+            .iter()
+            .filter_map(|row| row.get(col_ix))
+            .map(DrawnCell::preview);
+
+        Some(fit_width(header, false, cells, window, cx))
     }
 
     fn render_empty(

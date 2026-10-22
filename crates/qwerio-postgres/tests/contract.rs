@@ -78,3 +78,12 @@ impl ContractFixture for PostgresFixture {
 }
 
 qwerio_core::contract_tests!(PostgresFixture::new());
+
+#[tokio::test(flavor = "multi_thread")]
+async fn manages_users_roles_and_permissions() {
+    qwerio_core::contract::with_database(
+        &PostgresFixture::new(),
+        qwerio_core::contract::manages_users_roles_and_permissions,
+    )
+    .await;
+}

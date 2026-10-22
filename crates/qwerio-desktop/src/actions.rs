@@ -17,6 +17,7 @@ actions!(
         NewDatabase,
         NewTable,
         NewColumn,
+        OpenPermissions,
         NewSqlDocument,
         NewTemporaryQuery,
         NewNote,
@@ -70,6 +71,7 @@ pub const DATA_TABLE_CONTEXT: &str = "DataTable";
 pub fn bind_keys(cx: &mut App) {
     let workbench = Some(WORKBENCH_CONTEXT);
     let sql = Some(SQL_DOCUMENT_CONTEXT);
+    let sql_select_context = format!("{SQL_DOCUMENT_CONTEXT} > Select");
     let data_table = Some(DATA_TABLE_CONTEXT);
 
     cx.bind_keys([
@@ -96,6 +98,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("secondary-,", OpenSettings, workbench),
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-enter", RunStatement, sql),
+        // Select consumes its own Confirm action before the document binding can run.
+        KeyBinding::new("secondary-enter", RunStatement, Some(&sql_select_context)),
         KeyBinding::new("secondary-.", CancelStatement, sql),
         KeyBinding::new("secondary-shift-v", TogglePreview, workbench),
         KeyBinding::new("enter", EditCell, data_table),
@@ -151,6 +155,7 @@ pub fn application_menus() -> Vec<Menu> {
                 MenuItem::action("New Database…", NewDatabase),
                 MenuItem::action("New Table…", NewTable),
                 MenuItem::action("New Column…", NewColumn),
+                MenuItem::action("Users & permissions…", OpenPermissions),
                 MenuItem::action("New Temporary Query", NewTemporaryQuery),
                 MenuItem::action("New SQL Document", NewSqlDocument),
                 MenuItem::action("New Note", NewNote),

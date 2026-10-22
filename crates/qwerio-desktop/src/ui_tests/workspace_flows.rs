@@ -300,3 +300,35 @@ fn hides_the_first_tab_border_at_the_window_edge_without_a_sidebar(cx: &mut Test
         |window, _| window.find("tab-bar").bounds().left() < px(0.),
     );
 }
+
+/// The handle between the sidebar and the content: where the sidebar ends.
+const SIDEBAR_HANDLE: (&str, usize) = ("resizable-handle", 0);
+
+#[gpui_kit::test]
+fn the_sidebar_keeps_its_width_when_the_window_resizes(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    init_app(fixture.services.clone(), cx);
+    let (window, _) = open_workbench(Some(fixture.root.clone()), cx);
+    wait_until(window, cx, "the sidebar shows", |window, _| {
+        window
+            .within("shell-sidebar")
+            .try_find(SIDEBAR_HANDLE)
+            .is_some()
+    });
+    let sidebar_end = |window: &mut Window| {
+        window
+            .within("shell-sidebar")
+            .find(SIDEBAR_HANDLE)
+            .bounds()
+            .origin
+            .x
+    };
+    let before = interact(window, cx, |window, _| sidebar_end(window));
+
+    for width in [px(1600.), px(960.)] {
+        cx.simulate_window_resize(window, size(width, px(800.)));
+        interact(window, cx, |window, _| {
+            assert_eq!(sidebar_end(window), before, "in a {width:?} wide window");
+        });
+    }
+}

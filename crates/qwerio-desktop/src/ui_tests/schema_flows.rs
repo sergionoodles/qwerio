@@ -6,7 +6,7 @@ use gpui_kit::test::TestWindowExt as _;
 use super::*;
 
 /// Opens the shop connection, and its first table when `open_table` is set.
-fn open_connection(
+pub(super) fn open_connection(
     fixture: &Fixture,
     open_table: bool,
     cx: &mut TestAppContext,

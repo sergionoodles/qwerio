@@ -25,6 +25,7 @@ pub enum ContentEvent {
     OpenUntracked(String),
     /// Set up (or edit) the machine-local endpoint of a connection.
     SetUpConnection(ConnectionId),
+    OpenPermissions(Location),
     /// Create a document beside the current container, optionally linked to
     /// an object.
     NewDocument {

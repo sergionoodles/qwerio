@@ -67,6 +67,7 @@ impl SchemaForm {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .accessibility_label("Remove column")
                         .tooltip("Remove column")
                         .disabled(!can_remove)
                         .on_click(

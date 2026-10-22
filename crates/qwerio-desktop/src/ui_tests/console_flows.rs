@@ -10,7 +10,7 @@ const TARGET_LABEL: &str = "Shop data (SQLite)";
 /// Opens a temporary query, types `sql` into its editor (focused when the
 /// query opens), chooses the shop connection and `access`, and runs it with
 /// the keyboard shortcut.
-fn run_in_new_query(
+pub(super) fn run_in_new_query(
     fixture: &Fixture,
     sql: &str,
     access: &'static str,
@@ -34,19 +34,20 @@ fn run_in_new_query(
     });
     interact(window, cx, |window, cx| {
         window.click(access, cx);
+        assert_eq!(window.find("console-target").focused(), Some(true));
         window.press("secondary-enter", cx);
     });
     window
 }
 
-fn console_status(window: &Window) -> String {
+pub(super) fn console_status(window: &Window) -> String {
     label_of(window, "console-status")
         .map(|label| label.to_string())
         .unwrap_or_default()
 }
 
 #[gpui_kit::test]
-fn runs_a_query_and_shows_its_rows(cx: &mut TestAppContext) {
+fn runs_a_query_from_the_focused_connection_picker_and_shows_its_rows(cx: &mut TestAppContext) {
     let fixture = Fixture::new();
     let window = run_in_new_query(
         &fixture,

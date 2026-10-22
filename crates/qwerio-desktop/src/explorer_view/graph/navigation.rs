@@ -134,6 +134,7 @@ impl ExplorerView {
                     .ghost()
                     .xsmall()
                     .icon(Icon::new(LucideIcon::ZoomOut))
+                    .accessibility_label("Zoom Out")
                     .tooltip("Zoom Out")
                     .on_click(cx.listener(|this, _, _, cx| this.zoom_graph_out(cx))),
             )
@@ -150,6 +151,7 @@ impl ExplorerView {
                     .ghost()
                     .xsmall()
                     .icon(Icon::new(LucideIcon::ZoomIn))
+                    .accessibility_label("Zoom In")
                     .tooltip("Zoom In")
                     .on_click(cx.listener(|this, _, _, cx| this.zoom_graph_in(cx))),
             )

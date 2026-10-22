@@ -3,6 +3,7 @@
 //! the UI thread; results update this model, which notifies its views.
 
 mod files;
+mod permissions;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;

@@ -800,6 +800,9 @@ impl WorkspaceShell {
             ContentEvent::SetUpConnection(connection) => {
                 connection_dialog::open(self.model.clone(), Some(connection), window, cx);
             }
+            ContentEvent::OpenPermissions(location) => {
+                crate::permissions_dialog::open(self.model.clone(), location, window, cx);
+            }
             ContentEvent::NewDocument { kind, object } => {
                 self.new_document(kind, object, window, cx)
             }
@@ -1409,12 +1412,28 @@ impl WorkspaceShell {
                     .id(SharedString::from(format!("connection-menu-{id}")))
                     .child(place)
                     .context_menu(move |menu, _, _| {
+                        let permissions_model = model.clone();
                         let model = model.clone();
                         menu.item(PopupMenuItem::new("Edit Connection…").on_click(
                             move |_, window, cx| {
                                 connection_dialog::open(model.clone(), Some(id), window, cx);
                             },
                         ))
+                        .when(
+                            engine != qwerio_core::connection::EngineKind::Sqlite,
+                            |menu| {
+                                menu.item(PopupMenuItem::new("Users & permissions…").on_click(
+                                    move |_, window, cx| {
+                                        crate::permissions_dialog::open(
+                                            permissions_model.clone(),
+                                            Location::connection_root(id),
+                                            window,
+                                            cx,
+                                        );
+                                    },
+                                ))
+                            },
+                        )
                     })
                     .into_any_element(),
             );
@@ -1463,6 +1482,7 @@ impl WorkspaceShell {
                                     .ghost()
                                     .xsmall()
                                     .icon(IconName::Plus)
+                                    .accessibility_label("New Connection")
                                     .tooltip("New Connection")
                                     .on_click(cx.listener(|this, _, window, cx| {
                                         connection_dialog::open(
@@ -1540,6 +1560,7 @@ impl WorkspaceShell {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .accessibility_label("Close tab")
                         .tooltip("Close tab")
                         .on_click(
                             cx.listener(move |this, _, window, cx| this.close_tab(id, window, cx)),
@@ -1631,6 +1652,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("New Database…", Box::new(NewDatabase)),
         ("New Table…", Box::new(NewTable)),
         ("New Column…", Box::new(NewColumn)),
+        ("Users & permissions…", Box::new(OpenPermissions)),
         ("Go Back", Box::new(GoBack)),
         ("Go Forward", Box::new(GoForward)),
         ("Go to Workspace", Box::new(GoToWorkspaceRoot)),
@@ -1756,6 +1778,7 @@ impl Render for WorkspaceShell {
                     resizable_panel()
                         .size(px(SIDEBAR_WIDTH))
                         .size_range(px(SIDEBAR_MIN_WIDTH)..px(SIDEBAR_MAX_WIDTH))
+                        .fixed()
                         .child(self.render_sidebar(cx)),
                 )
                 .child(resizable_panel().child(content))
@@ -1823,6 +1846,14 @@ impl Render for WorkspaceShell {
             )
             .on_action(cx.listener(|this, _: &NewTable, window, cx| this.new_table(window, cx)))
             .on_action(cx.listener(|this, _: &NewColumn, window, cx| this.new_column(window, cx)))
+            .on_action(cx.listener(|this, _: &OpenPermissions, window, cx| {
+                crate::permissions_dialog::open(
+                    this.model.clone(),
+                    this.focused_location(),
+                    window,
+                    cx,
+                );
+            }))
             .on_action(cx.listener(|this, _: &NewSqlDocument, window, cx| {
                 this.new_document(DocumentKind::Sql, None, window, cx)
             }))

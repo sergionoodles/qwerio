@@ -272,6 +272,43 @@ impl DatabaseSession for MysqlSession {
         Ok(stream)
     }
 
+    async fn apply_permission_change(
+        &self,
+        change: &qwerio_core::permissions::PermissionChange,
+    ) -> DbResult<()> {
+        if self.info.requested_access != AccessMode::ReadWrite {
+            return Err(DatabaseError::new(
+                ErrorKind::ReadOnly,
+                "Permission changes require a writable session",
+            ));
+        }
+        if self.state.active().is_some() {
+            return Err(DatabaseError::session_busy());
+        }
+        change.preview(self.info.engine)?;
+        let change = change.clone();
+        let engine = self.info.engine;
+        let state = Arc::clone(&self.state);
+        self.with_client(move |client| Box::pin(async move {
+            if execute::transaction_state(client).await != TransactionState::Idle {
+                return Err(DatabaseError::invalid_request("Finish the transaction before changing permissions"));
+            }
+            // Only typed, quoted administration SQL reaches the text protocol.
+            // Never fall back for arbitrary SQL: it can contain extra statements.
+            client.query_drop("SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'NO_BACKSLASH_ESCAPES')").await.map_err(map_error)?;
+            let literal_database_names = if engine == qwerio_core::connection::EngineKind::Mysql {
+                let variable: Option<(String, String)> = client.query_first("SHOW GLOBAL VARIABLES LIKE 'partial_revokes'").await.map_err(map_error)?;
+                variable.is_some_and(|(_, value)| value.eq_ignore_ascii_case("ON"))
+            } else {
+                false
+            };
+            let sql = change.render_for_server(engine, literal_database_names)?;
+            let outcome = client.query_drop(sql).await.map_err(map_error);
+            state.set_transaction(execute::transaction_state(client).await);
+            outcome
+        })).await
+    }
+
     async fn cancel(&self, request: RequestId) -> DbResult<CancelOutcome> {
         let state = Arc::clone(&self.state);
         let options = self.control_options.clone();

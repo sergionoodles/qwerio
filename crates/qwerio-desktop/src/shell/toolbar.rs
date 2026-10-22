@@ -54,6 +54,7 @@ impl WorkspaceShell {
                 Button::new("toggle-sidebar")
                     .ghost()
                     .icon(IconName::PanelLeft)
+                    .accessibility_label("Sidebar")
                     .tooltip("Sidebar")
                     .toggled(self.is_sidebar_visible(window))
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_sidebar(window, cx))),
@@ -62,6 +63,7 @@ impl WorkspaceShell {
                 Button::new("back")
                     .ghost()
                     .icon(IconName::ArrowLeft)
+                    .accessibility_label("Back")
                     .tooltip("Back")
                     .disabled(!can_go_back)
                     .on_click(cx.listener(|this, _, window, cx| this.go_back(window, cx))),
@@ -70,6 +72,7 @@ impl WorkspaceShell {
                 Button::new("forward")
                     .ghost()
                     .icon(IconName::ArrowRight)
+                    .accessibility_label("Forward")
                     .tooltip("Forward")
                     .disabled(!can_go_forward)
                     .on_click(cx.listener(|this, _, window, cx| this.go_forward(window, cx))),
@@ -81,6 +84,7 @@ impl WorkspaceShell {
                 Button::new("refresh")
                     .ghost()
                     .icon(IconName::RefreshCw)
+                    .accessibility_label("Refresh")
                     .tooltip("Refresh")
                     .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
             )
@@ -89,6 +93,7 @@ impl WorkspaceShell {
                 Button::new("palette")
                     .ghost()
                     .icon(IconName::Search)
+                    .accessibility_label("Commands")
                     .tooltip("Commands")
                     .on_click(cx.listener(|this, _, window, cx| this.open_palette(window, cx))),
             );
@@ -110,6 +115,25 @@ impl WorkspaceShell {
                     .child(self.render_breadcrumb(cx)),
             )
             .child(self.render_schema_group(cx))
+            .content(
+                Button::new("open-permissions")
+                    .ghost()
+                    .icon(gpui_kit::assets::IconName::ShieldUser)
+                    .accessibility_label("Users & permissions")
+                    .tooltip("Users & permissions")
+                    .disabled(!crate::permissions_dialog::available(
+                        self.model.read(cx),
+                        &self.focused_location(),
+                    ))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        crate::permissions_dialog::open(
+                            this.model.clone(),
+                            this.focused_location(),
+                            window,
+                            cx,
+                        );
+                    })),
+            )
             .content(group_separator())
             .child(self.render_workspace_group(cx))
             .content(group_separator())
@@ -184,6 +208,7 @@ impl WorkspaceShell {
                 Button::new("new-database")
                     .ghost()
                     .icon(entry_icon(EntryKind::Database, cx))
+                    .accessibility_label("New Database")
                     .tooltip("New Database")
                     .disabled(targets.database.is_none())
                     .on_click(cx.listener(|this, _, window, cx| this.new_database(window, cx))),
@@ -192,6 +217,7 @@ impl WorkspaceShell {
                 Button::new("new-table")
                     .ghost()
                     .icon(object_icon(ObjectKind::Table, cx))
+                    .accessibility_label("New Table")
                     .tooltip("New Table")
                     .disabled(targets.table.is_none())
                     .on_click(cx.listener(|this, _, window, cx| this.new_table(window, cx))),
@@ -200,6 +226,7 @@ impl WorkspaceShell {
                 Button::new("new-column")
                     .ghost()
                     .icon(Icon::new(LucideIcon::Columns3).text_color(cx.theme().yellow))
+                    .accessibility_label("New Column")
                     .tooltip("New Column")
                     .disabled(targets.column.is_none())
                     .on_click(cx.listener(|this, _, window, cx| this.new_column(window, cx))),
@@ -214,6 +241,7 @@ impl WorkspaceShell {
                 Button::new("new-query")
                     .ghost()
                     .icon(Icon::new(LucideIcon::ScrollText).text_color(cx.theme().magenta))
+                    .accessibility_label("New Temporary Query")
                     .tooltip("New Temporary Query")
                     .on_click(
                         cx.listener(|this, _, window, cx| this.new_temporary_query(window, cx)),
@@ -223,6 +251,7 @@ impl WorkspaceShell {
                 Button::new("new-sql-document")
                     .ghost()
                     .icon(document_icon(DocumentKind::Sql, cx))
+                    .accessibility_label("New SQL Document")
                     .tooltip("New SQL Document")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.new_document(DocumentKind::Sql, None, window, cx)
@@ -232,6 +261,7 @@ impl WorkspaceShell {
                 Button::new("new-note")
                     .ghost()
                     .icon(document_icon(DocumentKind::Markdown, cx))
+                    .accessibility_label("New Note")
                     .tooltip("New Note")
                     .on_click(cx.listener(|this, _, window, cx| {
                         this.new_document(DocumentKind::Markdown, None, window, cx)
@@ -241,6 +271,7 @@ impl WorkspaceShell {
                 Button::new("new-folder")
                     .ghost()
                     .icon(Icon::new(LucideIcon::FolderPlus).text_color(cx.theme().yellow))
+                    .accessibility_label("New Folder")
                     .tooltip("New Folder")
                     .on_click(cx.listener(|this, _, window, cx| this.new_folder(window, cx))),
             )
@@ -248,6 +279,7 @@ impl WorkspaceShell {
                 Button::new("new-connection")
                     .ghost()
                     .icon(Icon::new(LucideIcon::Plug).text_color(cx.theme().blue))
+                    .accessibility_label("New Connection")
                     .tooltip("New Connection")
                     .on_click(cx.listener(|this, _, window, cx| {
                         connection_dialog::open(this.model.clone(), None, window, cx)
@@ -262,6 +294,7 @@ impl WorkspaceShell {
                 Button::new("new-tab")
                     .ghost()
                     .icon(IconName::Plus)
+                    .accessibility_label("New tab")
                     .tooltip("New tab")
                     .on_click(cx.listener(|this, _, window, cx| {
                         let location = this.focused_location();
@@ -272,6 +305,7 @@ impl WorkspaceShell {
                 Button::new("split")
                     .ghost()
                     .icon(Icon::new(LucideIcon::Split))
+                    .accessibility_label("Split")
                     .tooltip("Split")
                     .toggled(self.tabs.split().is_some())
                     .on_click(cx.listener(|this, _, window, cx| this.toggle_split(window, cx))),
@@ -314,6 +348,7 @@ impl WorkspaceShell {
             Button::new(id)
                 .ghost()
                 .icon(Icon::new(icon))
+                .accessibility_label(tooltip)
                 .tooltip(tooltip)
                 .toggled(current == layout)
                 .disabled(layout == ExplorerLayout::Graph && !can_show_graph)
@@ -400,6 +435,7 @@ fn render_app_group(shell_focus: FocusHandle) -> ToolbarGroup {
             Button::new("settings")
                 .ghost()
                 .icon(IconName::Settings)
+                .accessibility_label("Settings")
                 .tooltip("Settings")
                 // The shell's node bubbles to the workbench, which owns the
                 // theme, even when nothing inside the shell has focus.
@@ -411,6 +447,7 @@ fn render_app_group(shell_focus: FocusHandle) -> ToolbarGroup {
             Button::new("about")
                 .ghost()
                 .icon(IconName::Info)
+                .accessibility_label("About Qwerio")
                 .tooltip("About Qwerio")
                 .on_click(|_, window, cx| about_dialog::open(window, cx)),
         )

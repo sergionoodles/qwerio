@@ -17,6 +17,7 @@ use qwerio_core::value::Value;
 
 use crate::navigation::ViewState;
 use crate::requests::{Ticket, TicketIssuer};
+use crate::row_selection::{RowSelection, SelectionGesture};
 
 pub const DEFAULT_PAGE_ROWS: usize = 200;
 
@@ -55,6 +56,9 @@ pub struct TableBrowserState {
     row_locators: Vec<Value>,
     /// Rows released from the front of `rows` to stay within the budget.
     released_rows: usize,
+    /// Rows picked for copying and exporting, numbered from the query's
+    /// first row so releases do not shift them.
+    selection: RowSelection,
     next: Option<ContinuationToken>,
     mode: Option<PagingMode>,
     notice: Option<PageNotice>,
@@ -74,6 +78,7 @@ impl TableBrowserState {
             rows: Vec::new(),
             row_locators: Vec::new(),
             released_rows: 0,
+            selection: RowSelection::default(),
             next: None,
             mode: None,
             notice: None,
@@ -214,6 +219,7 @@ impl TableBrowserState {
         self.rows.clear();
         self.row_locators.clear();
         self.released_rows = 0;
+        self.selection.clear();
         self.next = None;
         self.notice = None;
         self.status = LoadStatus::Loading;
@@ -305,6 +311,38 @@ impl TableBrowserState {
         (0..self.rows.len()).find(|index| self.row_key(*index).as_ref() == Some(key))
     }
 
+    /// Picks loaded row `index` for copying and exporting. `None` is a row
+    /// that is not loaded, such as a new row: a plain click there clears
+    /// the picked rows.
+    pub fn pick_row(&mut self, index: Option<usize>, gesture: SelectionGesture) {
+        match index {
+            Some(index) => self.selection.apply(self.released_rows + index, gesture),
+            None if gesture == SelectionGesture::Replace => self.selection.clear(),
+            None => {}
+        }
+    }
+
+    pub fn is_row_picked(&self, index: usize) -> bool {
+        self.selection.contains(self.released_rows + index)
+    }
+
+    /// The picked rows that are still loaded, in order.
+    pub fn picked_rows(&self) -> Vec<Row> {
+        self.selection
+            .rows_within(self.loaded_range())
+            .map(|row| self.rows[row - self.released_rows].clone())
+            .collect()
+    }
+
+    pub fn picked_row_count(&self) -> usize {
+        self.selection.rows_within(self.loaded_range()).count()
+    }
+
+    /// Loaded rows, numbered from the query's first row.
+    fn loaded_range(&self) -> std::ops::Range<usize> {
+        self.released_rows..self.released_rows + self.rows.len()
+    }
+
     /// The unique key values of a row, used to restore selection.
     fn row_key(&self, index: usize) -> Option<Vec<Value>> {
         let row = self.rows.get(index)?;
@@ -369,6 +407,7 @@ impl TableBrowserState {
         };
 
         self.rows.remove(index);
+        self.selection.clear();
 
         if index < self.row_locators.len() {
             self.row_locators.remove(index);
@@ -386,6 +425,7 @@ impl TableBrowserState {
             .unzip();
 
         self.rows.splice(0..0, values);
+        self.selection.clear();
         self.row_locators
             .splice(0..0, locators.into_iter().flatten());
     }
@@ -670,6 +710,33 @@ mod tests {
         state.apply_page(refetch.ticket, Ok(page(4..8, false, &refetch)));
 
         assert_eq!(state.selected_row(), Some(2));
+    }
+
+    #[test]
+    fn picked_rows_survive_releases_and_clear_on_reload() {
+        let (mut state, first) = state();
+        state.apply_page(first.ticket, Ok(page(0..3, true, &first)));
+        let more = state.load_more().expect("second page");
+        state.apply_page(more.ticket, Ok(page(3..6, true, &more)));
+        state.pick_row(Some(2), SelectionGesture::Replace);
+        state.pick_row(Some(4), SelectionGesture::Toggle);
+
+        // The third page releases rows 0 to 2, so row 4 moves to index 1.
+        let more = state.load_more().expect("third page");
+        state.apply_page(more.ticket, Ok(page(6..9, true, &more)));
+
+        let picked_ids: Vec<Value> = state
+            .picked_rows()
+            .into_iter()
+            .map(|row| row[0].clone())
+            .collect();
+        assert_eq!(picked_ids, vec![Value::Integer(4)]);
+        assert_eq!(state.picked_row_count(), 1);
+        assert!(state.is_row_picked(1));
+
+        let refetch = state.refresh().expect("refresh");
+        state.apply_page(refetch.ticket, Ok(page(0..3, false, &refetch)));
+        assert!(state.picked_rows().is_empty());
     }
 
     #[test]

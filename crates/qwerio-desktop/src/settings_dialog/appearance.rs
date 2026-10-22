@@ -240,7 +240,7 @@ impl AppearanceSettings {
             div()
                 .id("settings-frosted-glass-shade")
                 .w(px(THEME_SELECT_WIDTH))
-                .child(Slider::new(&self.shade_slider))
+                .child(Slider::new(&self.shade_slider).accessibility_label(title))
                 .test_support(),
             cx,
         )

@@ -4,7 +4,7 @@ members = ["crates/*"]
 default-members = ["crates/qwerio-desktop"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
@@ -19,7 +19,7 @@ qwerio-sqlite = { path = "crates/qwerio-sqlite" }
 qwerio-workspace = { path = "crates/qwerio-workspace" }
 qwerio-app = { path = "crates/qwerio-app" }
 
-gpui-kit = { version = "0.7.3" }
+gpui-kit = { version = "0.8.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
