@@ -29,16 +29,9 @@ impl TableView {
     ) {
         match *event {
             TableEvent::SelectCell(row, col_ix) | TableEvent::RightClickedCell(row, col_ix) => {
-                let is_right_click = matches!(event, TableEvent::RightClickedCell(..));
-
                 self.grid.update(cx, |grid, cx| {
                     let delegate = grid.delegate_mut();
                     let column = delegate.visible().get(col_ix).copied();
-
-                    if is_right_click {
-                        delegate.right_clicked = column.map(|column| (row, column));
-                    }
-
                     let is_other_cell =
                         column.is_none_or(|column| !delegate.is_editing(row, column));
 

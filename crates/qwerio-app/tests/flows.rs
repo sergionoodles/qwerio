@@ -7,15 +7,16 @@ use std::time::{Instant, SystemTime};
 
 use qwerio_app::console::{ConsoleState, ExecutionTarget, RunOutcome};
 use qwerio_app::credentials::MemoryCredentialStore;
+use qwerio_app::export::{ExportProgress, MAX_FILE_EXPORT_ROWS, TableExport, export_table};
 use qwerio_app::local_state::LocalState;
 use qwerio_app::navigation::{NavigationHistory, ViewState};
 use qwerio_app::registry::DriverRegistry;
-use qwerio_app::services::export_table;
 use qwerio_app::table::TableBrowserState;
 use qwerio_app::{AppError, AppServices};
 use qwerio_core::connection::{ConnectionOptions, EngineKind, SqliteOptions};
 use qwerio_core::driver::QueryRequest;
-use qwerio_core::export::ExportFormat;
+use qwerio_core::error::ErrorKind;
+use qwerio_core::export::{CsvOptions, ExportFormat, ExportTarget};
 use qwerio_core::paging::PageRequest;
 use qwerio_core::relationship::RelationshipOutcome;
 use qwerio_core::resource::{CatalogPath, ObjectKind, ObjectRef};
@@ -294,9 +295,13 @@ async fn unbound_and_unknown_targets_are_reported_before_running() {
     ));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn full_exports_include_rows_beyond_the_loaded_page() {
-    let environment = environment();
+/// Opens a browse session on the fixture and describes `orders`.
+async fn orders_session(
+    environment: &Environment,
+) -> (
+    Arc<dyn qwerio_core::driver::DatabaseSession>,
+    Arc<qwerio_core::catalog::ObjectDetails>,
+) {
     let resolved = environment
         .services
         .resolve_connection(environment.workspace.manifest(), environment.connection)
@@ -309,17 +314,43 @@ async fn full_exports_include_rows_beyond_the_loaded_page() {
         .expect("session");
     let details = Arc::new(
         session
-            .describe(&object(&environment, "orders"))
+            .describe(&object(environment, "orders"))
             .await
             .expect("describe"),
     );
 
+    (session, details)
+}
+
+fn orders_export(
+    details: &Arc<qwerio_core::catalog::ObjectDetails>,
+    format: ExportFormat,
+    max_rows: u64,
+) -> TableExport {
+    TableExport {
+        request: PageRequest::first(Arc::clone(details)),
+        format,
+        target: ExportTarget::new(EngineKind::Sqlite, details),
+        max_rows,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn full_exports_include_rows_beyond_the_loaded_page() {
+    let environment = environment();
+    let (session, details) = orders_session(&environment).await;
+    let progress = ExportProgress::default();
+
     let mut output = Vec::new();
     let summary = export_table(
         session.as_ref(),
-        PageRequest::first(details),
-        ExportFormat::Csv,
+        orders_export(
+            &details,
+            ExportFormat::Csv(CsvOptions::default()),
+            MAX_FILE_EXPORT_ROWS,
+        ),
         &mut output,
+        &progress,
     )
     .await
     .expect("export");
@@ -327,6 +358,58 @@ async fn full_exports_include_rows_beyond_the_loaded_page() {
     let text = String::from_utf8(output).expect("utf-8");
     assert_eq!(summary.rows, 500);
     assert!(!summary.hit_limit);
+    assert_eq!(progress.rows(), 500);
     assert_eq!(text.lines().count(), 501, "header plus every row");
     assert!(text.starts_with("\"id\",\"customer_id\",\"total\"\n"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn full_exports_stop_at_the_row_limit_with_complete_output() {
+    let environment = environment();
+    let (session, details) = orders_session(&environment).await;
+
+    for (format, last_line) in [
+        (ExportFormat::Json, "]"),
+        (
+            ExportFormat::SqlInsert,
+            "INSERT INTO \"orders\" (\"id\", \"customer_id\", \"total\") VALUES (250, 1, 375);",
+        ),
+    ] {
+        let mut output = Vec::new();
+        let summary = export_table(
+            session.as_ref(),
+            orders_export(&details, format, 250),
+            &mut output,
+            &ExportProgress::default(),
+        )
+        .await
+        .expect("export");
+
+        let text = String::from_utf8(output).expect("utf-8");
+        assert_eq!(summary.rows, 250);
+        assert!(summary.hit_limit);
+        assert_eq!(text.lines().last(), Some(last_line));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancelled_exports_stop_with_a_cancelled_error() {
+    let environment = environment();
+    let (session, details) = orders_session(&environment).await;
+    let progress = ExportProgress::default();
+    progress.cancel();
+
+    let result = export_table(
+        session.as_ref(),
+        orders_export(&details, ExportFormat::Json, MAX_FILE_EXPORT_ROWS),
+        &mut Vec::new(),
+        &progress,
+    )
+    .await;
+
+    assert_eq!(
+        result.map_err(|error| error.kind),
+        Err(ErrorKind::Cancelled)
+    );
+    assert_eq!(progress.rows(), 0);
 }

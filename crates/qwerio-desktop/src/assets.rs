@@ -59,6 +59,10 @@ gpui_kit::assets::icon_assets!(
         ArrowLeftRight,
         Tag,
         Scale,
+        ShieldCheck,
+        ShieldUser,
+        UserPlus,
+        Code,
         X
     ]
 );
@@ -102,6 +106,22 @@ mod tests {
         for path in [POSTGRES_LOGO_PATH, SQLITE_LOGO_PATH] {
             let bytes = AppAssets.load(path).expect("load").expect("bundled logo");
             assert!(bytes.starts_with(b"<svg"));
+        }
+    }
+
+    #[test]
+    fn permission_icons_load() {
+        use gpui_kit::assets::IconName;
+
+        for icon in [
+            IconName::ShieldCheck,
+            IconName::ShieldUser,
+            IconName::UserPlus,
+            IconName::Code,
+        ] {
+            let path = icon.path();
+            let bytes = AppAssets.load(&path).expect("load").expect("bundled icon");
+            assert!(bytes.starts_with(b"<svg"), "{path} is not an SVG");
         }
     }
 

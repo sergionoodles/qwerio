@@ -401,6 +401,18 @@ impl ExplorerView {
             _ => menu,
         };
 
+        let menu = match &open_target {
+            EntryTarget::Open(location)
+                if crate::permissions_dialog::available(model.read(cx), location) =>
+            {
+                menu.separator().item(item(
+                    "Users & permissions…",
+                    ContentEvent::OpenPermissions(location.clone()),
+                ))
+            }
+            _ => menu,
+        };
+
         let manifest = Arc::clone(model.read(cx).manifest());
 
         let menu = match entry.movable {

@@ -3,6 +3,7 @@
 
 use gpui_kit::TestAppContext;
 use gpui_kit::test::TestWindowExt as _;
+use qwerio_core::display::NULL_LABEL;
 
 use super::*;
 
@@ -400,4 +401,26 @@ fn workspace_file_commands_guard_pending_rows_before_opening_pickers(cx: &mut Te
             cx.simulate_path_prompt_response(|_| None);
         }
     }
+}
+
+#[gpui_kit::test]
+fn regression_right_clicking_a_cell_opens_the_row_menu_for_that_cell(cx: &mut TestAppContext) {
+    let fixture = Fixture::new();
+    let window = open_tasks(&fixture, cx);
+
+    interact(window, cx, |window, cx| window.right_click("cell-0-4", cx));
+    wait_until(window, cx, "the row menu opens", |window, _| {
+        window.try_find("popup-menu").is_some()
+    });
+    interact(window, cx, |window, cx| {
+        assert_eq!(
+            window.within("popup-menu").find(0_usize).label(),
+            Some("Inspect Row")
+        );
+        click_menu_item(window, "Set Cell to NULL", cx);
+    });
+
+    wait_until(window, cx, "the note is set to NULL", |window, _| {
+        label_of(window, "cell-0-4").as_deref() == Some(NULL_LABEL)
+    });
 }

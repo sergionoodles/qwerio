@@ -1,11 +1,8 @@
 //! Context menus belong to the entry under the pointer, or to empty space;
 //! containers of tables can show their relationships as a graph.
 
-use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{
-    InputEvent as _, Modifiers, MouseMoveEvent, Pixels, ScrollDelta, ScrollWheelEvent, TouchPhase,
-    point,
-};
+use gpui_kit::test::{TestEventExt as _, TestWindowExt as _};
+use gpui_kit::{Modifiers, ScrollDelta, point};
 
 use super::*;
 use crate::explorer_view::node_widths;
@@ -114,7 +111,7 @@ fn shows_relationships_as_a_graph_and_describes_hovered_lines(cx: &mut TestAppCo
 
     interact(window, cx, |window, cx| {
         let origin = window.find("explorer-graph-content").bounds().origin;
-        move_pointer(window, origin + point(px(middle.x), px(middle.y)), cx);
+        window.pointer_move(origin + point(px(middle.x), px(middle.y)), None, cx);
     });
     wait_until(window, cx, "hovering the line describes it", |window, _| {
         label_of(window, "relationship-details").as_deref() == Some("orders references customers")
@@ -138,18 +135,9 @@ fn zooms_the_graph_with_keys_wheel_and_buttons(cx: &mut TestAppContext) {
         zoom_label(window).as_deref() == Some("120%")
     });
 
-    interact(window, cx, |window, cx| {
-        let position = window.find("explorer-graph-content").bounds().center();
-        window.dispatch_event(
-            ScrollWheelEvent {
-                position,
-                delta: ScrollDelta::Pixels(point(px(0.), px(-60.))),
-                modifiers: Modifiers::control(),
-                touch_phase: TouchPhase::Moved,
-            }
-            .to_platform_input(),
-            cx,
-        );
+    holding(window, cx, Modifiers::control(), |window, cx| {
+        let delta = ScrollDelta::Pixels(point(px(0.), px(-60.)));
+        window.scroll("explorer-graph-content", delta, cx);
     });
     wait_until(window, cx, "Ctrl and the wheel zooms out", |window, _| {
         zoom_label(window).as_deref() == Some("100%")
@@ -159,16 +147,4 @@ fn zooms_the_graph_with_keys_wheel_and_buttons(cx: &mut TestAppContext) {
     wait_until(window, cx, "the zoom out button zooms out", |window, _| {
         zoom_label(window).as_deref() == Some("83%")
     });
-}
-
-fn move_pointer(window: &mut Window, position: Point<Pixels>, cx: &mut App) {
-    window.dispatch_event(
-        MouseMoveEvent {
-            position,
-            pressed_button: None,
-            modifiers: Default::default(),
-        }
-        .to_platform_input(),
-        cx,
-    );
 }

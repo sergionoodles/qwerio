@@ -2,13 +2,17 @@
 //! clicks and keystrokes, against a temporary workspace and SQLite database.
 
 mod about_flows;
+mod accessibility_flows;
+mod column_fit_flows;
 mod connection_flows;
 mod console_flows;
 mod document_flows;
 mod edit_flows;
 mod explorer_flows;
+mod export_flows;
 #[cfg(not(target_os = "macos"))]
 mod menu_flows;
+mod permissions_flows;
 mod row_flows;
 mod schema_flows;
 mod settings_flows;
@@ -19,9 +23,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use gpui_kit::test::{ClickOptions, TestEventExt as _, TestWindowExt as _};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, Bounds, ElementId, Entity, Point, SharedString,
-    TestAppContext, Window, WindowBounds, WindowOptions, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, ElementId, Entity, Modifiers, MouseButton,
+    Pixels, Point, SharedString, TestAppContext, Window, WindowBounds, WindowOptions, point, px,
+    size,
 };
 use qwerio_app::AppServices;
 use qwerio_app::credentials::MemoryCredentialStore;
@@ -291,4 +297,58 @@ pub fn interact<R>(
         .expect("test window is open");
     cx.run_until_parked();
     result
+}
+
+/// Holds `modifiers` down, as a user holds Ctrl or Shift, for what `body`
+/// does, then lets them go. Pressing, `body`, and releasing are separate
+/// updates, so views that read the window's modifiers while handling an
+/// event see them still held.
+pub fn holding<R>(
+    handle: AnyWindowHandle,
+    cx: &mut TestAppContext,
+    modifiers: Modifiers,
+    body: impl FnOnce(&mut Window, &mut App) -> R,
+) -> R {
+    interact(handle, cx, |window, cx| {
+        window.change_modifiers(modifiers, cx)
+    });
+    let result = interact(handle, cx, body);
+    interact(handle, cx, |window, cx| {
+        window.change_modifiers(Modifiers::none(), cx)
+    });
+    result
+}
+
+/// More items than any popup menu holds.
+const MENU_ITEMS_SEARCHED: usize = 40;
+
+/// Clicks the open popup menu's item labelled `label`.
+pub fn click_menu_item(window: &mut Window, label: &str, cx: &mut App) {
+    let mut menu = window.within("popup-menu");
+    let index = (0..MENU_ITEMS_SEARCHED)
+        .find(|index| {
+            menu.try_find(*index)
+                .and_then(|item| item.label().map(str::to_owned))
+                .as_deref()
+                == Some(label)
+        })
+        .unwrap_or_else(|| panic!("the menu has no {label:?} item"));
+
+    menu.click(index, cx);
+}
+
+/// Inside the table's 0.75rem row header, clear of the sidebar's resize
+/// handle, whose hit area overlaps the row's left edge.
+const ROW_HEADER_OFFSET: Pixels = px(8.);
+
+/// Clicks the row header of grid `row`, the narrow strip on the row's left
+/// edge, with `button` and the modifiers held.
+pub fn click_row_header(window: &mut Window, row: usize, button: MouseButton, cx: &mut App) {
+    let height = window.find(("row", row)).bounds().size.height;
+    let options = ClickOptions::new()
+        .with_offset(point(ROW_HEADER_OFFSET, height / 2.))
+        .with_button(button)
+        .with_modifiers(window.modifiers());
+
+    window.click_with_options(("row", row), options, cx);
 }

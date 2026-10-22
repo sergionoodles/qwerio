@@ -21,6 +21,7 @@ pub mod export;
 pub mod filter;
 pub mod ids;
 pub mod paging;
+pub mod permissions;
 pub mod relationship;
 pub mod resource;
 pub mod result;

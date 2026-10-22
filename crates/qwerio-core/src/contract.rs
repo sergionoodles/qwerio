@@ -29,6 +29,8 @@ use crate::session::{AccessMode, SessionPurpose, TransactionState};
 use crate::value::Value;
 
 mod edits;
+mod permissions;
+pub use permissions::manages_users_roles_and_permissions;
 
 pub use edits::{
     row_edits_delete_update_and_insert_in_order, row_edits_save_all_or_nothing,

@@ -113,6 +113,16 @@ pub trait DatabaseSession: DatabaseCatalog + TableBrowser + TableEditor {
     /// immediately with `SessionBusy` while another request runs.
     fn execute(&self, request: QueryRequest) -> DbResult<ResultStream>;
 
+    /// Runs one typed administration mutation. Adapters may use a different
+    /// protocol for commands their prepared-statement API does not support.
+    /// Call `permissions::apply` for version, scope, and password-safe errors.
+    async fn apply_permission_change(
+        &self,
+        change: &crate::permissions::PermissionChange,
+    ) -> DbResult<()> {
+        crate::permissions::execute_change(self, change).await
+    }
+
     /// Best-effort cancellation; the request's events report the outcome.
     async fn cancel(&self, request_id: RequestId) -> DbResult<CancelOutcome>;
 

@@ -6,10 +6,13 @@
 pub mod console;
 pub mod credentials;
 pub mod error;
+pub mod export;
 pub mod local_state;
 pub mod navigation;
+pub mod permissions;
 pub mod registry;
 pub mod requests;
+pub mod row_selection;
 pub mod schema;
 pub mod services;
 pub mod sessions;

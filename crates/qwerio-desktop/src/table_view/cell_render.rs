@@ -7,12 +7,14 @@ use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::calendar::{Calendar, CalendarState};
 use gpui_kit::component::checkbox::Checkbox;
 use gpui_kit::component::input::{Escape, Input};
+use gpui_kit::component::menu::ContextMenuExt as _;
+use gpui_kit::component::table::{TableDelegate as _, TableEvent};
 use gpui_kit::component::{ActiveTheme as _, Disableable as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, anchored,
-    deferred, div, px,
+    AnyElement, App, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _,
+    anchored, deferred, div, px,
 };
 use qwerio_core::cell_input::boolean_state;
 use qwerio_core::display::NULL_LABEL;
@@ -88,6 +90,7 @@ impl TableGridDelegate {
                         .ghost()
                         .xsmall()
                         .icon(Icon::new(gpui_kit::assets::IconName::Calendar))
+                        .accessibility_label("Pick a date")
                         .tooltip("Pick a date")
                         .toggled(edit.is_calendar_open)
                         .on_click(
@@ -157,6 +160,38 @@ impl TableGridDelegate {
             })
             .into_any_element()
     }
+}
+
+/// Gives a cell the row menu, with the cell's own items. The table opens
+/// that menu only for right clicks outside cells: on a cell it stops the
+/// click, so the cell needs a menu of its own.
+pub(super) fn with_row_menu(
+    content: AnyElement,
+    row_ix: usize,
+    col_ix: usize,
+    column: usize,
+    cx: &mut GridContext,
+) -> AnyElement {
+    let table = cx.entity();
+
+    div()
+        .id(SharedString::from(format!("cell-menu-{row_ix}-{col_ix}")))
+        .size_full()
+        // Runs before the menu, which keeps the table from reporting the
+        // right click itself; an edit in another cell still commits.
+        .on_mouse_down(
+            MouseButton::Right,
+            cx.listener(move |_, _, _, cx| cx.emit(TableEvent::RightClickedCell(row_ix, col_ix))),
+        )
+        .child(content)
+        .context_menu(move |menu, window, cx| {
+            table.update(cx, |table, cx| {
+                let delegate = table.delegate_mut();
+                delegate.right_clicked = Some((row_ix, column));
+                delegate.context_menu(row_ix, menu, window, cx)
+            })
+        })
+        .into_any_element()
 }
 
 /// A new-row cell left to the column's default.

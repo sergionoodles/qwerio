@@ -1,14 +1,16 @@
 //! Browsing one table or view: a virtualized grid of database pages with
 //! server-side sorting and filtering, a record inspector, relationship
-//! navigation, copy, full export, and inline editing: cells, new rows, and
-//! deleted rows, saved together in one transaction.
+//! navigation, row selection with copy and export, and inline editing:
+//! cells, new rows, and deleted rows, saved together in one transaction.
 
 mod cell_editor;
 mod cell_render;
 mod cell_widgets;
+mod column_fit;
 mod edits;
 mod paging;
 mod row_changes;
+mod row_export;
 
 use std::sync::Arc;
 
@@ -24,17 +26,18 @@ use gpui_kit::component::{
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, WeakEntity, Window, div,
+    AnyElement, App, AppContext as _, ClipboardItem, Context, Div, Entity, EventEmitter,
+    FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, Modifiers,
+    ParentElement as _, Pixels, Render, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, Subscription, WeakEntity, Window, div,
 };
 use qwerio_app::navigation::ViewState;
-use qwerio_app::services::export_table;
+use qwerio_app::row_selection::SelectionGesture;
 use qwerio_app::table::{LoadStatus, TableBrowserState};
 use qwerio_app::table_edit_session::TableEditSession;
 use qwerio_core::catalog::{ForeignKeyInfo, ObjectDetails};
 use qwerio_core::driver::DatabaseSession;
-use qwerio_core::export::{ExportFormat, delimited_string};
+use qwerio_core::export::{ExportFormat, export_string};
 use qwerio_core::filter::{Filter, FilterOperand, FilterOperator, SortDirection, SortKey};
 use qwerio_core::paging::{PageNotice, PagingMode};
 use qwerio_core::relationship::RelationshipOutcome;
@@ -147,42 +150,35 @@ impl TableDelegate for TableGridDelegate {
             return self.render_editor(row_ix, col_ix, cx);
         }
 
-        let cell = if self.is_checkbox_column(column) {
-            self.render_checkbox(row_ix, col_ix, column, cx)
-        } else if self.is_default_cell(row_ix, column) {
-            cell_render::render_default_cell(row_ix, col_ix, cx)
-        } else {
-            match self.cell_value(row_ix, column) {
-                Some(value) => render_cell(row_ix, col_ix, value, cx),
-                None => return div().into_any_element(),
-            }
-        };
+        let content = self.render_cell_content(row_ix, col_ix, column, cx);
+        cell_render::with_row_menu(content, row_ix, col_ix, column, cx)
+    }
 
-        let is_deleted = self.is_deleted_row(row_ix);
-        let tint = if is_deleted {
-            Some(cx.theme().danger.opacity(CHANGE_TINT_OPACITY))
-        } else if self.is_modified(row_ix, column) {
-            Some(cx.theme().warning.opacity(CHANGE_TINT_OPACITY))
-        } else if self.is_new_row(row_ix) {
-            Some(cx.theme().success.opacity(CHANGE_TINT_OPACITY))
-        } else {
-            None
-        };
+    fn fit_column(
+        &mut self,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Option<Pixels> {
+        self.fit_width(col_ix, window, cx)
+    }
 
-        let Some(tint) = tint else {
-            return cell;
-        };
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let row = div().id(("row", row_ix));
+        let is_picked = self
+            .loaded_row(row_ix)
+            .is_some_and(|index| self.browser.is_row_picked(index));
 
-        div()
-            .size_full()
-            .px_1()
-            .rounded_sm()
-            .bg(tint)
-            .when(is_deleted, |this| {
-                this.line_through().text_color(cx.theme().muted_foreground)
-            })
-            .child(cell)
-            .into_any_element()
+        if is_picked {
+            return row.bg(cx.theme().table_active);
+        }
+
+        row
     }
 
     fn render_empty(
@@ -227,17 +223,16 @@ impl TableDelegate for TableGridDelegate {
             Some(_) => self.loaded_row_menu(row_ix, menu),
             None => menu,
         };
-
-        if !self.is_editable() {
-            return menu;
-        }
-
-        let menu = match self.right_clicked.filter(|(row, _)| *row == row_ix) {
-            Some((row, column)) => self.cell_edit_menu(row, column, menu),
-            None => menu,
+        let menu = if self.is_editable() {
+            self.edit_menu(row_ix, menu)
+        } else {
+            menu
         };
 
-        self.row_change_menu(row_ix, menu)
+        menu.separator()
+            .item(self.view_item("Fit All Columns", |view, window, cx| {
+                view.fit_all_columns(window, cx)
+            }))
     }
 
     fn has_more(&self, _: &App) -> bool {
@@ -272,10 +267,72 @@ impl TableDelegate for TableGridDelegate {
 const CHANGE_TINT_OPACITY: f32 = 0.18;
 
 impl TableGridDelegate {
+    /// A cell's value as drawn, tinted when it has unsaved changes.
+    fn render_cell_content(
+        &self,
+        row_ix: usize,
+        col_ix: usize,
+        column: usize,
+        cx: &mut Context<TableState<Self>>,
+    ) -> AnyElement {
+        let cell = if self.is_checkbox_column(column) {
+            self.render_checkbox(row_ix, col_ix, column, cx)
+        } else if self.is_default_cell(row_ix, column) {
+            cell_render::render_default_cell(row_ix, col_ix, cx)
+        } else {
+            match self.cell_value(row_ix, column) {
+                Some(value) => render_cell(row_ix, col_ix, value, cx),
+                None => return div().into_any_element(),
+            }
+        };
+
+        let is_deleted = self.is_deleted_row(row_ix);
+        let Some(tint) = self.cell_tint(row_ix, column, cx) else {
+            return cell;
+        };
+
+        div()
+            .size_full()
+            .px_1()
+            .rounded_sm()
+            .bg(tint)
+            .when(is_deleted, |this| {
+                this.line_through().text_color(cx.theme().muted_foreground)
+            })
+            .child(cell)
+            .into_any_element()
+    }
+
+    /// The background of a cell with unsaved changes: deleted, edited, or
+    /// part of a new row.
+    fn cell_tint(&self, row_ix: usize, column: usize, cx: &App) -> Option<Hsla> {
+        let color = if self.is_deleted_row(row_ix) {
+            cx.theme().danger
+        } else if self.is_modified(row_ix, column) {
+            cx.theme().warning
+        } else if self.is_new_row(row_ix) {
+            cx.theme().success
+        } else {
+            return None;
+        };
+
+        Some(color.opacity(CHANGE_TINT_OPACITY))
+    }
+
+    /// Cell and row editing items for the right-clicked row.
+    fn edit_menu(&self, row_ix: usize, menu: PopupMenu) -> PopupMenu {
+        let menu = match self.right_clicked.filter(|(row, _)| *row == row_ix) {
+            Some((row, column)) => self.cell_edit_menu(row, column, menu),
+            None => menu,
+        };
+
+        self.row_change_menu(row_ix, menu)
+    }
+
     /// A menu item running `action` on the table view.
     fn view_item(
         &self,
-        label: &'static str,
+        label: impl Into<SharedString>,
         action: impl Fn(&mut TableView, &mut Window, &mut Context<TableView>) + 'static,
     ) -> PopupMenuItem {
         let owner = self.owner.clone();
@@ -284,10 +341,23 @@ impl TableGridDelegate {
         })
     }
 
-    /// Inspect and copy items for a loaded row.
+    /// Inspect, copy, and export items for a loaded row.
     fn loaded_row_menu(&self, row: usize, menu: PopupMenu) -> PopupMenu {
+        let picked = self.browser.picked_row_count();
+        let is_picked = self
+            .loaded_row(row)
+            .is_some_and(|index| self.browser.is_row_picked(index));
+        let export_label = if is_picked && picked > 1 {
+            format!("Export {picked} Selected Rows…")
+        } else {
+            "Export Row…".to_owned()
+        };
+
         menu.item(self.view_item("Inspect Row", move |view, _, cx| view.inspect_row(row, cx)))
             .item(self.view_item("Copy Row", move |view, _, cx| view.copy_rows(Some(row), cx)))
+            .item(self.view_item(export_label, move |view, window, cx| {
+                view.export_row(row, window, cx)
+            }))
     }
 
     /// Add, duplicate, and delete items for a row.
@@ -364,6 +434,7 @@ pub struct TableView {
     inspector_open: bool,
     selected_row: Option<usize>,
     error: Option<SharedString>,
+    export_job: Option<row_export::ExportJob>,
     focus_handle: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -423,6 +494,7 @@ impl TableView {
             inspector_open,
             selected_row: None,
             error: None,
+            export_job: None,
             focus_handle: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
@@ -482,6 +554,10 @@ impl TableView {
             }
             Some(PageNotice::ByteLimit) => parts.push("large rows: smaller pages".to_owned()),
             None => {}
+        }
+
+        if browser.picked_row_count() > 1 {
+            parts.push(format!("{} selected", browser.picked_row_count()));
         }
 
         if browser.released_rows() > 0 {
@@ -626,15 +702,44 @@ impl TableView {
             _ => None,
         };
 
+        let gesture = match event {
+            TableEvent::SelectRow(_) | TableEvent::SelectCell(..) => {
+                Some(selection_gesture(window.modifiers()))
+            }
+            _ => None,
+        };
+
         if let Some(row) = row {
             self.selected_row = Some(row);
-            self.grid.update(cx, |grid, _| {
+            self.grid.update(cx, |grid, cx| {
                 let delegate = grid.delegate_mut();
                 let loaded = delegate.loaded_row(row);
-                delegate.browser.select_row(loaded)
+                delegate.browser.select_row(loaded);
+
+                if let Some(gesture) = gesture {
+                    delegate.browser.pick_row(loaded, gesture);
+                }
+
+                // A modified row header click also selects the row in the
+                // table itself, which would keep a row Ctrl took out of the
+                // picked rows highlighted.
+                let is_unpicked = loaded.is_none_or(|index| !delegate.browser.is_row_picked(index));
+                if grid.selected_row() == Some(row) && is_unpicked {
+                    grid.clear_selection(cx);
+                }
             });
             cx.notify();
         }
+    }
+
+    /// Fits every column to its header and loaded rows, as a double-click on
+    /// each resize handle does.
+    fn fit_all_columns(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.grid.update(cx, |grid, cx| {
+            for col_ix in 0..grid.delegate().columns_count(cx) {
+                grid.fit_col(col_ix, window, cx);
+            }
+        });
     }
 
     fn inspect_row(&mut self, row: usize, cx: &mut Context<Self>) {
@@ -657,66 +762,11 @@ impl TableView {
                 .collect::<Vec<_>>(),
             None => browser.rows().to_vec(),
         };
-        let text = delimited_string(ExportFormat::Tsv, browser.columns(), &rows);
-        cx.write_to_clipboard(ClipboardItem::new_string(text));
-    }
-
-    fn export(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let browser = &self.grid.read(cx).delegate().browser;
-        let (Some(details), Some(session)) = (
-            browser.details().cloned(),
-            self.grid.read(cx).delegate().session.clone(),
-        ) else {
+        let Some(target) = delegate.export_target() else {
             return;
         };
-
-        let view = browser.view().clone();
-        let request = qwerio_core::paging::PageRequest {
-            filters: view.filters,
-            sort: view.sort,
-            ..qwerio_core::paging::PageRequest::first(details)
-        };
-        let directory = self.model.read(cx).directory();
-        let file_name = format!(
-            "{}.csv",
-            qwerio_app::templates::file_stem(&self.object.name)
-        );
-        let prompt = cx.prompt_for_new_path(&directory, Some(&file_name));
-
-        cx.spawn_in(window, async move |_, cx| {
-            let Ok(Ok(Some(path))) = prompt.await else {
-                return;
-            };
-
-            let export = cx.background_spawn(async move {
-                let mut file = std::fs::File::create(&path).map_err(|error| error.to_string())?;
-                export_table(session.as_ref(), request, ExportFormat::Csv, &mut file)
-                    .await
-                    .map_err(|error| error.message)
-                    .map(|summary| (summary, path))
-            });
-
-            let result = export.await;
-
-            cx.update(|window, cx| {
-                let notification = match result {
-                    Ok((summary, path)) if summary.hit_limit => Notification::warning(format!(
-                        "Exported the first {} rows to {} (export limit reached)",
-                        summary.rows,
-                        path.display()
-                    )),
-                    Ok((summary, path)) => Notification::success(format!(
-                        "Exported {} rows to {}",
-                        summary.rows,
-                        path.display()
-                    )),
-                    Err(error) => Notification::error(format!("Export failed: {error}")),
-                };
-                window.push_notification(notification, cx);
-            })
-            .ok();
-        })
-        .detach();
+        let text = export_string(ExportFormat::Tsv, &target, browser.columns(), &rows);
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
     }
 
     fn follow(
@@ -848,6 +898,7 @@ impl TableView {
                     .ghost()
                     .small()
                     .icon(IconName::RefreshCw)
+                    .accessibility_label("Refresh")
                     .tooltip("Refresh")
                     .on_click(cx.listener(|this, _, window, cx| this.refresh(window, cx))),
             )
@@ -877,9 +928,12 @@ impl TableView {
                     .icon(gpui_kit::component::Icon::new(
                         gpui_kit::assets::IconName::Download,
                     ))
-                    .label("Export All…")
-                    .tooltip("Export every matching row to a CSV file")
-                    .on_click(cx.listener(|this, _, window, cx| this.export(window, cx))),
+                    .label("Export…")
+                    .tooltip("Export selected or all rows as CSV, JSON, or SQL INSERT")
+                    .disabled(self.is_exporting())
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.open_export_dialog(window, cx)),
+                    ),
             )
             .child(self.render_documents_menu(cx))
             .child(div().flex_1())
@@ -890,6 +944,7 @@ impl TableView {
                     .ghost()
                     .small()
                     .icon(IconName::PanelRight)
+                    .accessibility_label("Inspector")
                     .tooltip("Inspector")
                     .toggled(self.inspector_open)
                     .on_click(cx.listener(|this, _, _, cx| {
@@ -1015,6 +1070,7 @@ impl TableView {
                                         .ghost()
                                         .xsmall()
                                         .icon(IconName::Copy)
+                                        .accessibility_label("Copy value")
                                         .tooltip("Copy value")
                                         .on_click(move |_, _, cx| {
                                             cx.write_to_clipboard(ClipboardItem::new_string(
@@ -1031,6 +1087,7 @@ impl TableView {
                                     .icon(gpui_kit::component::Icon::new(
                                         gpui_kit::assets::IconName::Funnel,
                                     ))
+                                    .accessibility_label("Filter by this value")
                                     .tooltip("Filter by this value")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.filter_by_cell(column, cx)
@@ -1125,6 +1182,18 @@ impl TableView {
     }
 }
 
+/// Shift extends the selected rows to a range; Ctrl (Cmd on macOS) adds or
+/// removes one row.
+fn selection_gesture(modifiers: Modifiers) -> SelectionGesture {
+    if modifiers.shift {
+        SelectionGesture::Extend
+    } else if modifiers.secondary() {
+        SelectionGesture::Toggle
+    } else {
+        SelectionGesture::Replace
+    }
+}
+
 fn section_label(text: &'static str, cx: &App) -> impl IntoElement {
     div()
         .pt_3()
@@ -1164,6 +1233,7 @@ impl Render for TableView {
                 cx.notify();
             }))
             .child(self.render_toolbar(cx))
+            .children(self.render_export_progress(cx))
             .child(
                 h_flex()
                     .flex_1()

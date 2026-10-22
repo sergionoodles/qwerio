@@ -265,6 +265,7 @@ impl Render for FilterPanel {
                         .ghost()
                         .xsmall()
                         .icon(IconName::Close)
+                        .accessibility_label("Remove filter")
                         .tooltip("Remove filter")
                         .on_click(cx.listener(move |this, _, _, cx| this.remove(index, cx))),
                 )

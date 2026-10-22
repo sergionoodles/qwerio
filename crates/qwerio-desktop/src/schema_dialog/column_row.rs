@@ -88,6 +88,7 @@ pub fn type_input(
         .ghost()
         .xsmall()
         .icon(IconName::ChevronDown)
+        .accessibility_label("Suggested types")
         .tooltip("Suggested types")
         .dropdown_menu(move |menu, _, _| {
             types.iter().fold(menu, |menu, data_type| {
