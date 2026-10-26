@@ -3,7 +3,7 @@
 //! (Command on macOS, Control elsewhere) and never claim Super, which tiling
 //! window managers such as Hyprland reserve.
 
-use gpui_kit::{App, KeyBinding, Menu, MenuItem, actions};
+use gpui_kit::{Action, App, KeyBinding, KeyBindingContextPredicate, Menu, MenuItem, actions};
 
 actions!(
     qwerio,
@@ -68,46 +68,75 @@ pub const SQL_DOCUMENT_CONTEXT: &str = "SqlDocument";
 /// Key context of gpui-component's data table, which has no Enter binding.
 pub const DATA_TABLE_CONTEXT: &str = "DataTable";
 
+pub(crate) fn key_binding<A: Action>(
+    keystrokes: &str,
+    action: A,
+    context: Option<&str>,
+    cx: &App,
+) -> KeyBinding {
+    let context_predicate = context.map(|context| {
+        KeyBindingContextPredicate::parse(context)
+            .expect("application keybinding context should parse")
+            .into()
+    });
+
+    KeyBinding::load(
+        keystrokes,
+        Box::new(action),
+        context_predicate,
+        false,
+        None,
+        cx,
+    )
+    .expect("application keybinding should parse for the host platform")
+}
+
 pub fn bind_keys(cx: &mut App) {
     let workbench = Some(WORKBENCH_CONTEXT);
     let sql = Some(SQL_DOCUMENT_CONTEXT);
     let sql_select_context = format!("{SQL_DOCUMENT_CONTEXT} > Select");
     let data_table = Some(DATA_TABLE_CONTEXT);
 
-    cx.bind_keys([
-        KeyBinding::new("secondary-o", OpenWorkspace, workbench),
-        KeyBinding::new("secondary-shift-n", NewConnection, workbench),
-        KeyBinding::new("secondary-n", NewSqlDocument, workbench),
-        KeyBinding::new("secondary-alt-n", NewTemporaryQuery, workbench),
-        KeyBinding::new("secondary-t", NewTab, workbench),
-        KeyBinding::new("secondary-w", CloseTab, workbench),
+    let key_bindings = [
+        key_binding("secondary-o", OpenWorkspace, workbench, cx),
+        key_binding("secondary-shift-n", NewConnection, workbench, cx),
+        key_binding("secondary-n", NewSqlDocument, workbench, cx),
+        key_binding("secondary-alt-n", NewTemporaryQuery, workbench, cx),
+        key_binding("secondary-t", NewTab, workbench, cx),
+        key_binding("secondary-w", CloseTab, workbench, cx),
         KeyBinding::new("ctrl-tab", NextTab, workbench),
         KeyBinding::new("ctrl-shift-tab", PreviousTab, workbench),
-        KeyBinding::new("secondary-\\", ToggleSplit, workbench),
-        KeyBinding::new("secondary-k secondary-o", FocusOtherPane, workbench),
-        KeyBinding::new("secondary-b", ToggleSidebar, workbench),
-        KeyBinding::new("secondary-i", ToggleInspector, workbench),
-        KeyBinding::new("secondary-shift-f", FocusExplorerFilter, workbench),
-        KeyBinding::new("secondary-shift-p", OpenCommandPalette, workbench),
-        KeyBinding::new("secondary-k secondary-p", OpenCommandPalette, workbench),
+        key_binding("secondary-\\", ToggleSplit, workbench, cx),
+        key_binding("secondary-k secondary-o", FocusOtherPane, workbench, cx),
+        key_binding("secondary-b", ToggleSidebar, workbench, cx),
+        key_binding("secondary-i", ToggleInspector, workbench, cx),
+        key_binding("secondary-shift-f", FocusExplorerFilter, workbench, cx),
+        key_binding("secondary-shift-p", OpenCommandPalette, workbench, cx),
+        key_binding("secondary-k secondary-p", OpenCommandPalette, workbench, cx),
         KeyBinding::new("f5", Refresh, workbench),
-        KeyBinding::new("secondary-s", Save, workbench),
-        KeyBinding::new("secondary-=", IncreaseFontSize, workbench),
-        KeyBinding::new("secondary--", DecreaseFontSize, workbench),
-        KeyBinding::new("secondary-0", ResetFontSize, workbench),
-        KeyBinding::new("secondary-,", OpenSettings, workbench),
-        KeyBinding::new("secondary-q", Quit, None),
-        KeyBinding::new("secondary-enter", RunStatement, sql),
+        key_binding("secondary-s", Save, workbench, cx),
+        key_binding("secondary-=", IncreaseFontSize, workbench, cx),
+        key_binding("secondary--", DecreaseFontSize, workbench, cx),
+        key_binding("secondary-0", ResetFontSize, workbench, cx),
+        key_binding("secondary-,", OpenSettings, workbench, cx),
+        key_binding("secondary-q", Quit, None, cx),
+        key_binding("secondary-enter", RunStatement, sql, cx),
         // Select consumes its own Confirm action before the document binding can run.
-        KeyBinding::new("secondary-enter", RunStatement, Some(&sql_select_context)),
-        KeyBinding::new("secondary-.", CancelStatement, sql),
-        KeyBinding::new("secondary-shift-v", TogglePreview, workbench),
+        key_binding(
+            "secondary-enter",
+            RunStatement,
+            Some(&sql_select_context),
+            cx,
+        ),
+        key_binding("secondary-.", CancelStatement, sql, cx),
+        key_binding("secondary-shift-v", TogglePreview, workbench, cx),
         KeyBinding::new("enter", EditCell, data_table),
         KeyBinding::new("f2", EditCell, data_table),
         KeyBinding::new("alt-insert", AddRow, data_table),
-        KeyBinding::new("secondary-d", DuplicateRow, data_table),
+        key_binding("secondary-d", DuplicateRow, data_table, cx),
         KeyBinding::new("delete", DeleteRow, data_table),
-    ]);
+    ];
+    cx.bind_keys(key_bindings);
 
     if cfg!(target_os = "macos") {
         cx.bind_keys([

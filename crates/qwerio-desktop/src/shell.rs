@@ -1317,7 +1317,7 @@ impl WorkspaceShell {
                     this.navigate(
                         target.clone(),
                         ViewState::default(),
-                        event.modifiers().secondary(),
+                        event.modifiers().secondary(cx),
                         window,
                         cx,
                     );

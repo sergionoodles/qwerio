@@ -704,7 +704,7 @@ impl TableView {
 
         let gesture = match event {
             TableEvent::SelectRow(_) | TableEvent::SelectCell(..) => {
-                Some(selection_gesture(window.modifiers()))
+                Some(selection_gesture(window.modifiers(), cx))
             }
             _ => None,
         };
@@ -1184,10 +1184,10 @@ impl TableView {
 
 /// Shift extends the selected rows to a range; Ctrl (Cmd on macOS) adds or
 /// removes one row.
-fn selection_gesture(modifiers: Modifiers) -> SelectionGesture {
+fn selection_gesture(modifiers: Modifiers, cx: &App) -> SelectionGesture {
     if modifiers.shift {
         SelectionGesture::Extend
-    } else if modifiers.secondary() {
+    } else if modifiers.secondary(cx) {
         SelectionGesture::Toggle
     } else {
         SelectionGesture::Replace

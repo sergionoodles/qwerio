@@ -70,16 +70,23 @@ pub fn bind_keys(cx: &mut App) {
         gpui_kit::KeyBinding::new("home", SelectFirst, context),
         gpui_kit::KeyBinding::new("end", SelectLast, context),
         gpui_kit::KeyBinding::new("enter", OpenSelected, context),
-        gpui_kit::KeyBinding::new("secondary-enter", OpenSelectedInNewTab, context),
     ]);
 
+    cx.bind_keys([crate::actions::key_binding(
+        "secondary-enter",
+        OpenSelectedInNewTab,
+        context,
+        cx,
+    )]);
+
     let graph = Some("Explorer && graph");
-    cx.bind_keys([
-        gpui_kit::KeyBinding::new("secondary-=", ZoomIn, graph),
-        gpui_kit::KeyBinding::new("secondary-+", ZoomIn, graph),
-        gpui_kit::KeyBinding::new("secondary--", ZoomOut, graph),
-        gpui_kit::KeyBinding::new("secondary-0", ResetZoom, graph),
-    ]);
+    let graph_bindings = [
+        crate::actions::key_binding("secondary-=", ZoomIn, graph, cx),
+        crate::actions::key_binding("secondary-+", ZoomIn, graph, cx),
+        crate::actions::key_binding("secondary--", ZoomOut, graph, cx),
+        crate::actions::key_binding("secondary-0", ResetZoom, graph, cx),
+    ];
+    cx.bind_keys(graph_bindings);
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -295,7 +302,7 @@ impl ExplorerView {
         if event.click_count() >= 2
             && let Some(entry) = self.entries.get(index).cloned()
         {
-            self.open_entry(&entry, event.modifiers().secondary(), cx);
+            self.open_entry(&entry, event.modifiers().secondary(cx), cx);
         }
     }
 
@@ -805,7 +812,7 @@ impl Render for ExplorerView {
             }
         };
 
-        let mut key_context = KeyContext::new_with_defaults();
+        let mut key_context = KeyContext::new_with_defaults(cx.platform_info().os);
         key_context.add(EXPLORER_CONTEXT);
         if self.effective_layout() == ExplorerLayout::Graph {
             key_context.add(GRAPH_CONTEXT);

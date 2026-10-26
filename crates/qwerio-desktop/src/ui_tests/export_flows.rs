@@ -43,7 +43,8 @@ fn ctrl_and_shift_clicks_select_rows_to_copy_as_json_or_sql(cx: &mut TestAppCont
     let window = open_connection(&fixture, true, cx);
 
     interact(window, cx, |window, cx| window.click("cell-0-1", cx));
-    holding(window, cx, Modifiers::secondary_key(), |window, cx| {
+    let secondary_key = cx.update(|cx| Modifiers::secondary_key(cx));
+    holding(window, cx, secondary_key, |window, cx| {
         window.click("cell-2-1", cx)
     });
     interact(window, cx, |window, _| {
@@ -79,7 +80,8 @@ fn regression_ctrl_click_on_a_row_header_unselects_the_row(cx: &mut TestAppConte
     let fixture = Fixture::new();
     let window = open_connection(&fixture, true, cx);
     let ctrl_click_row_two = |cx: &mut TestAppContext| {
-        holding(window, cx, Modifiers::secondary_key(), |window, cx| {
+        let secondary_key = cx.update(|cx| Modifiers::secondary_key(cx));
+        holding(window, cx, secondary_key, |window, cx| {
             click_row_header(window, 2, MouseButton::Left, cx)
         })
     };

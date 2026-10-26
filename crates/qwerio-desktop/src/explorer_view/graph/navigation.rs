@@ -5,9 +5,10 @@ use gpui_kit::assets::IconName as LucideIcon;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::{
-    Context, CursorStyle, DispatchPhase, FocusHandle, Hitbox, InteractiveElement as _, IntoElement,
-    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    Pixels, Point, ScrollWheelEvent, Size, Styled as _, WeakEntity, Window, point, px, size,
+    App, Context, CursorStyle, DispatchPhase, FocusHandle, Hitbox, InteractiveElement as _,
+    IntoElement, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, ScrollEvent, Size, Styled as _, WeakEntity, Window, point,
+    px, size,
 };
 
 use super::{Drag, GraphStatus};
@@ -176,9 +177,9 @@ pub(super) fn track_viewport_input(
 
     {
         let view = view.clone();
-        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+        window.on_mouse_event(move |event: &ScrollEvent, phase, _, cx| {
             // Capture, so the scroll area does not also scroll.
-            if phase != DispatchPhase::Capture || !is_zoom_modifier(&event.modifiers) {
+            if phase != DispatchPhase::Capture || !is_zoom_modifier(&event.modifiers, cx) {
                 return;
             }
 
@@ -240,8 +241,8 @@ pub(super) fn track_viewport_input(
 }
 
 /// Ctrl on every platform, plus Command on macOS.
-fn is_zoom_modifier(modifiers: &Modifiers) -> bool {
-    modifiers.control || modifiers.secondary()
+fn is_zoom_modifier(modifiers: &Modifiers, cx: &App) -> bool {
+    modifiers.control || modifiers.secondary(cx)
 }
 
 fn to_f32(position: Point<Pixels>) -> Point<f32> {
