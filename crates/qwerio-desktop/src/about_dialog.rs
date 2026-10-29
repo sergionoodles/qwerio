@@ -12,7 +12,7 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, div, img, px,
 };
 
-use crate::assets::LOGO_PATH;
+use crate::assets::logo_path;
 use crate::theme::glass;
 
 pub const APP_NAME: &str = "Qwerio";
@@ -78,7 +78,7 @@ fn render_logo(cx: &App) -> impl IntoElement {
         .border_color(cx.theme().border)
         .shadow_md()
         .child(
-            img(LOGO_PATH)
+            img(logo_path(cx.theme().mode))
                 .id("about-logo")
                 .role(Role::Image)
                 .aria_label(format!("{APP_NAME} icon"))

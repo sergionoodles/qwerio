@@ -578,9 +578,10 @@ and platform acceptance checks all pass. AI is outside that completion gate.
 - `.github/workflows/build-apps.yml` builds unsigned packages on `v*` tags
   and on demand: a Linux AppImage (`scripts/package-linux.sh`, Ubuntu 22.04
   glibc), a universal macOS DMG with an ad-hoc signed app
-  (`scripts/package-macos.sh`). Tags also create a draft release. The icon
-  in `packaging/icons` is a placeholder; `scripts/generate-icons.sh`
-  regenerates its PNG renditions.
+  (`scripts/package-macos.sh`). Tags also create a draft release.
+  `scripts/generate-icons.sh` builds the official logo (the mark on a dark
+  tile, `resources/logo_tile_2048.png`), the favicon, and the PNG
+  renditions in `packaging/icons` from `resources/logo_2048.png`.
 
 ### 8.3 Checks
 

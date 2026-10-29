@@ -1411,28 +1411,36 @@ impl WorkspaceShell {
                 div()
                     .id(SharedString::from(format!("connection-menu-{id}")))
                     .child(place)
-                    .context_menu(move |menu, _, _| {
+                    .context_menu(move |menu, _, cx| {
                         let permissions_model = model.clone();
+                        let transfer_model = model.clone();
                         let model = model.clone();
-                        menu.item(PopupMenuItem::new("Edit Connection…").on_click(
-                            move |_, window, cx| {
-                                connection_dialog::open(model.clone(), Some(id), window, cx);
-                            },
-                        ))
-                        .when(
-                            engine != qwerio_core::connection::EngineKind::Sqlite,
-                            |menu| {
-                                menu.item(PopupMenuItem::new("Users & permissions…").on_click(
-                                    move |_, window, cx| {
-                                        crate::permissions_dialog::open(
-                                            permissions_model.clone(),
-                                            Location::connection_root(id),
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                ))
-                            },
+                        let menu = menu
+                            .item(PopupMenuItem::new("Edit Connection…").on_click(
+                                move |_, window, cx| {
+                                    connection_dialog::open(model.clone(), Some(id), window, cx);
+                                },
+                            ))
+                            .when(
+                                engine != qwerio_core::connection::EngineKind::Sqlite,
+                                |menu| {
+                                    menu.item(PopupMenuItem::new("Users & permissions…").on_click(
+                                        move |_, window, cx| {
+                                            crate::permissions_dialog::open(
+                                                permissions_model.clone(),
+                                                Location::connection_root(id),
+                                                window,
+                                                cx,
+                                            );
+                                        },
+                                    ))
+                                },
+                            );
+                        crate::database_transfer::append_menu(
+                            menu,
+                            transfer_model,
+                            Location::connection_root(id),
+                            cx,
                         )
                     })
                     .into_any_element(),

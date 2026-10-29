@@ -6,6 +6,7 @@ mod accessibility_flows;
 mod column_fit_flows;
 mod connection_flows;
 mod console_flows;
+mod database_transfer_flows;
 mod document_flows;
 mod edit_flows;
 mod explorer_flows;

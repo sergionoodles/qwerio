@@ -135,6 +135,28 @@ impl WorkspaceShell {
                     })),
             )
             .content(group_separator())
+            .when(
+                crate::database_transfer::available(self.model.read(cx), &self.focused_location()),
+                |toolbar| {
+                    let model = self.model.clone();
+                    let location = self.focused_location();
+                    toolbar.content(
+                        Button::new("database-actions")
+                            .ghost()
+                            .icon(IconName::Ellipsis)
+                            .accessibility_label("Database actions")
+                            .tooltip("Database actions")
+                            .dropdown_menu(move |menu, _, cx| {
+                                crate::database_transfer::append_menu(
+                                    menu,
+                                    model.clone(),
+                                    location.clone(),
+                                    cx,
+                                )
+                            }),
+                    )
+                },
+            )
             .child(self.render_workspace_group(cx))
             .content(group_separator())
             .child(self.render_tabs_group(cx))
