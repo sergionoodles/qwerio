@@ -23,7 +23,7 @@ use qwerio_app::local_state::RecentWorkspace;
 
 use crate::about_dialog;
 use crate::actions::*;
-use crate::assets::LOGO_PATH;
+use crate::assets::logo_path;
 use crate::platform::paths::APPLICATION_ID;
 use crate::services::Services;
 use crate::settings_dialog;
@@ -299,7 +299,7 @@ impl Workbench {
                     .max_w_full()
                     .p_6()
                     .gap_6()
-                    .child(img(LOGO_PATH).size(px(96.)))
+                    .child(img(logo_path(cx.theme().mode)).size(px(96.)))
                     .child(
                         v_flex()
                             .gap_1()

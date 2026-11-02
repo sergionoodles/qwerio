@@ -2,15 +2,26 @@
 
 use std::borrow::Cow;
 
+use gpui_kit::component::ThemeMode;
 use gpui_kit::{AssetSource, Result, SharedString};
 
-pub const LOGO_PATH: &str = "branding/logo.png";
+/// White and orange mark, for dark surfaces; also the official logo.
+pub const LOGO_ON_DARK_PATH: &str = "branding/logo.png";
+/// The same mark with its white half inverted to a dark tone, for light surfaces.
+pub const LOGO_ON_LIGHT_PATH: &str = "branding/logo-light.png";
 pub const POSTGRES_LOGO_PATH: &str = "engines/postgresql.svg";
 pub const SQLITE_LOGO_PATH: &str = "engines/sqlite.svg";
 
 /// Monochrome engine marks from Simple Icons (CC0), tinted like other icons.
-const BUNDLED: [(&str, &[u8]); 3] = [
-    (LOGO_PATH, include_bytes!("../../../resources/logo_512.png")),
+const BUNDLED: [(&str, &[u8]); 4] = [
+    (
+        LOGO_ON_DARK_PATH,
+        include_bytes!("../../../resources/logo_512.png"),
+    ),
+    (
+        LOGO_ON_LIGHT_PATH,
+        include_bytes!("../../../resources/logo_light_512.png"),
+    ),
     (
         POSTGRES_LOGO_PATH,
         include_bytes!("../../../resources/engines/postgresql.svg"),
@@ -66,6 +77,15 @@ gpui_kit::assets::icon_assets!(
         X
     ]
 );
+
+/// The app logo variant that stays legible on the given theme's surfaces.
+pub fn logo_path(mode: ThemeMode) -> &'static str {
+    if mode.is_dark() {
+        LOGO_ON_DARK_PATH
+    } else {
+        LOGO_ON_LIGHT_PATH
+    }
+}
 
 pub struct AppAssets;
 
@@ -126,28 +146,34 @@ mod tests {
     }
 
     #[test]
-    fn bundled_logo_loads_and_is_listed_under_branding() {
-        let bytes = AppAssets
-            .load(LOGO_PATH)
-            .expect("load logo")
-            .expect("bundled logo");
-        assert_eq!(
-            bytes.as_ref(),
-            include_bytes!("../../../resources/logo_512.png")
-        );
-        assert!(
-            AppAssets
-                .list("branding/")
-                .expect("list branding")
-                .iter()
-                .any(|path| path == LOGO_PATH)
-        );
-        assert!(
-            !AppAssets
-                .list("icons/")
-                .expect("list icons")
-                .iter()
-                .any(|path| path == LOGO_PATH)
-        );
+    fn logo_matches_the_theme_mode() {
+        assert_eq!(logo_path(ThemeMode::Dark), LOGO_ON_DARK_PATH);
+        assert_eq!(logo_path(ThemeMode::Light), LOGO_ON_LIGHT_PATH);
+    }
+
+    #[test]
+    fn bundled_logos_load_and_are_listed_under_branding() {
+        let logos: [(&str, &[u8]); 2] = [
+            (
+                LOGO_ON_DARK_PATH,
+                include_bytes!("../../../resources/logo_512.png"),
+            ),
+            (
+                LOGO_ON_LIGHT_PATH,
+                include_bytes!("../../../resources/logo_light_512.png"),
+            ),
+        ];
+        let branding = AppAssets.list("branding/").expect("list branding");
+        let icons = AppAssets.list("icons/").expect("list icons");
+
+        for (path, expected) in logos {
+            let bytes = AppAssets
+                .load(path)
+                .expect("load logo")
+                .expect("bundled logo");
+            assert_eq!(bytes.as_ref(), expected, "{path}");
+            assert!(branding.iter().any(|listed| listed == path), "{path}");
+            assert!(!icons.iter().any(|listed| listed == path), "{path}");
+        }
     }
 }

@@ -420,6 +420,13 @@ impl ExplorerView {
             _ => menu,
         };
 
+        let menu = match &open_target {
+            EntryTarget::Open(location) => {
+                crate::database_transfer::append_menu(menu, model.clone(), location.clone(), cx)
+            }
+            EntryTarget::Untracked(_) => menu,
+        };
+
         let manifest = Arc::clone(model.read(cx).manifest());
 
         let menu = match entry.movable {

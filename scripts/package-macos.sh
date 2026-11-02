@@ -8,6 +8,7 @@
 # Security → Open Anyway).
 #
 # Usage: scripts/package-macos.sh <output directory> <qwerio binary>...
+# Set QWERIO_PACKAGE_SUFFIX=-fast to keep variants distinct in a release.
 set -euo pipefail
 
 # Keep in sync with MACOSX_DEPLOYMENT_TARGET in the release workflow.
@@ -21,6 +22,7 @@ fi
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 output="$1"
+package_suffix="${QWERIO_PACKAGE_SUFFIX:-}"
 shift
 
 version="$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --format-version 1 \
@@ -49,7 +51,7 @@ codesign --verify --strict "$app"
 
 ln -s /Applications "$work/staging/Applications"
 mkdir -p "$output"
-dmg="$output/Qwerio-$version-macos-universal.dmg"
+dmg="$output/Qwerio$package_suffix-$version-macos-universal.dmg"
 
 # hdiutil occasionally fails with "Resource busy" on CI machines.
 for attempt in $(seq "$DMG_ATTEMPTS"); do

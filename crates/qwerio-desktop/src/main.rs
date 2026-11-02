@@ -6,6 +6,7 @@ mod actions;
 mod assets;
 mod connection_dialog;
 mod content;
+mod database_transfer;
 mod document_view;
 mod explorer_view;
 mod filter_panel;

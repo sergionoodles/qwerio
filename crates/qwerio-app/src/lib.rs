@@ -5,6 +5,7 @@
 
 pub mod console;
 pub mod credentials;
+pub mod database_transfer;
 pub mod error;
 pub mod export;
 pub mod local_state;

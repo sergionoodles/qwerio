@@ -2470,6 +2470,7 @@ dependencies = [
  "backtrace",
  "bitflags 2.13.2",
  "chrono",
+ "criterion",
  "ctor",
  "derive_more",
  "embed-resource",
@@ -2478,6 +2479,7 @@ dependencies = [
  "futures-concurrency",
  "getrandom 0.3.4",
  "gpui-fast-macros",
+ "gpui-pre-bench-metrics",
  "gpui-pre-collections",
  "gpui-pre-http-client",
  "gpui-pre-refineable",
@@ -2485,6 +2487,7 @@ dependencies = [
  "gpui-pre-shared-string",
  "gpui-pre-sum-tree",
  "gpui-pre-util",
+ "hdrhistogram",
  "heapless",
  "image",
  "inventory",
@@ -2779,6 +2782,7 @@ dependencies = [
  "gpui-component",
  "gpui-fast",
  "gpui-fast-platform",
+ "gpui-fast-web",
  "gpui-kit-assets",
  "gpui-pre",
  "gpui-pre-macros",
@@ -2793,6 +2797,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c214017b45e5654665f18faa551f58a2c2c8d25efe6632b1a443ba8edf365e96"
 dependencies = [
  "anyhow",
+ "gpui-fast",
  "gpui-pre",
  "gpui-pre-reqwest",
  "log",
@@ -3320,12 +3325,14 @@ checksum = "e0f9dae92b9bc15baa6e530c90bdd4c689d3710bd4d18c3566deb1d6ae182daf"
 
 [[package]]
 name = "gpui-tui"
-version = "0.3.0"
-source = "git+https://github.com/sergionoodles/gpui-tui?tag=v0.3.0#aa6ee9a234de7b5856e6bd1e9ea51ef851a26266"
+version = "0.3.1"
+source = "git+https://github.com/sergionoodles/gpui-tui?tag=v0.3.1#a2636f74ce2db2b099c9d50a0bc97797ef89f1f2"
 dependencies = [
  "anyhow",
  "calloop",
  "futures",
+ "gpui-fast",
+ "gpui-fast-wgpu",
  "gpui-pre",
  "gpui-pre-wgpu",
  "gpui-tui-term",
@@ -3336,8 +3343,8 @@ dependencies = [
 
 [[package]]
 name = "gpui-tui-term"
-version = "0.3.0"
-source = "git+https://github.com/sergionoodles/gpui-tui?tag=v0.3.0#aa6ee9a234de7b5856e6bd1e9ea51ef851a26266"
+version = "0.3.1"
+source = "git+https://github.com/sergionoodles/gpui-tui?tag=v0.3.1#a2636f74ce2db2b099c9d50a0bc97797ef89f1f2"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -5952,7 +5959,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-app"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "qwerio-core",
  "qwerio-sqlite",
@@ -5967,7 +5974,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "serde",
@@ -5977,7 +5984,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-desktop"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "directories",
@@ -6001,7 +6008,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-mysql"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -6012,7 +6019,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-postgres"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "fallible-iterator 0.2.0",
@@ -6028,7 +6035,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-sqlite"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "qwerio-core",
@@ -6039,7 +6046,7 @@ dependencies = [
 
 [[package]]
 name = "qwerio-workspace"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "notify",
  "qwerio-core",
