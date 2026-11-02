@@ -1,5 +1,6 @@
 # Builds unsigned Qwerio apps: a Linux AppImage, a Linux tarball for SSH (--tui),
-# and a universal macOS DMG. Packages are uploaded as workflow artifacts;
+# and a universal macOS DMG, each with standard and GPUI Fast variants.
+# Packages are uploaded as workflow artifacts;
 # pushing a v* tag also attaches them to a draft release.
 name: Build apps
 
@@ -41,10 +42,23 @@ jobs:
           if-no-files-found: error
 
   linux:
-    name: Linux AppImage
+    name: Linux AppImage (${{ matrix.renderer }})
     needs: icons
     # The oldest available glibc, so the AppImage runs on more distributions.
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - renderer: GPUI
+            features: ""
+            suffix: ""
+          - renderer: GPUI Fast
+            features: gpui-fast
+            suffix: "-fast"
+    env:
+      QWERIO_BUILD_FEATURES: ${{ matrix.features }}
+      QWERIO_PACKAGE_SUFFIX: ${{ matrix.suffix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -64,23 +78,38 @@ jobs:
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: linux${{ matrix.suffix }}
 
       - name: Build
-        run: cargo build --release --locked --package qwerio-desktop
+        run: cargo build --release --locked --package qwerio-desktop --features "$QWERIO_BUILD_FEATURES"
 
       - name: Package
         run: scripts/package-linux.sh target/release/qwerio dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qwerio-linux
+          name: qwerio-linux${{ matrix.suffix }}
           path: dist/*
           if-no-files-found: error
 
   linux-over-ssh:
-    name: Linux binary for SSH (--tui)
+    name: Linux binary for SSH (--tui, ${{ matrix.renderer }})
     # Same oldest-glibc runner as the AppImage: the binary must start on older servers.
     runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - renderer: GPUI
+            features: tui
+            suffix: ""
+          - renderer: GPUI Fast
+            features: tui,gpui-fast
+            suffix: "-fast"
+    env:
+      QWERIO_BUILD_FEATURES: ${{ matrix.features }}
+      QWERIO_PACKAGE_SUFFIX: ${{ matrix.suffix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -96,27 +125,39 @@ jobs:
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          key: tui
+          key: tui${{ matrix.suffix }}
 
       - name: Build
-        run: cargo build --release --locked --package qwerio-desktop --features tui
+        run: cargo build --release --locked --package qwerio-desktop --features "$QWERIO_BUILD_FEATURES"
 
       - name: Package
         run: scripts/package-linux-over-ssh.sh target/release/qwerio dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qwerio-linux-over-ssh
+          name: qwerio-linux-over-ssh${{ matrix.suffix }}
           path: dist/*
           if-no-files-found: error
 
   macos:
-    name: macOS DMG
+    name: macOS DMG (${{ matrix.renderer }})
     needs: icons
     runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - renderer: GPUI
+            features: ""
+            suffix: ""
+          - renderer: GPUI Fast
+            features: gpui-fast
+            suffix: "-fast"
     env:
       # Keep in sync with MINIMUM_SYSTEM_VERSION in scripts/package-macos.sh.
       MACOSX_DEPLOYMENT_TARGET: "11.0"
+      QWERIO_BUILD_FEATURES: ${{ matrix.features }}
+      QWERIO_PACKAGE_SUFFIX: ${{ matrix.suffix }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -131,11 +172,13 @@ jobs:
             --profile minimal --target aarch64-apple-darwin --target x86_64-apple-darwin
 
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: macos${{ matrix.suffix }}
 
       - name: Build
         run: |
-          cargo build --release --locked --package qwerio-desktop --target aarch64-apple-darwin
-          cargo build --release --locked --package qwerio-desktop --target x86_64-apple-darwin
+          cargo build --release --locked --package qwerio-desktop --target aarch64-apple-darwin --features "$QWERIO_BUILD_FEATURES"
+          cargo build --release --locked --package qwerio-desktop --target x86_64-apple-darwin --features "$QWERIO_BUILD_FEATURES"
 
       - name: Package
         run: |
@@ -145,7 +188,7 @@ jobs:
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: qwerio-macos
+          name: qwerio-macos${{ matrix.suffix }}
           path: dist/*
           if-no-files-found: error
 

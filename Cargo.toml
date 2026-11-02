@@ -20,6 +20,7 @@ qwerio-workspace = { path = "crates/qwerio-workspace" }
 qwerio-app = { path = "crates/qwerio-app" }
 
 gpui-kit = { version = "=0.8.1" }
+gpui-tui = { git = "https://github.com/sergionoodles/gpui-tui", tag = "v0.3.1" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

@@ -4,6 +4,7 @@
 # EGL, X11/xkbcommon), as GPU drivers cannot be bundled.
 #
 # Usage: scripts/package-linux.sh <path to qwerio binary> <output directory>
+# Set QWERIO_PACKAGE_SUFFIX=-fast to keep variants distinct in a release.
 set -euo pipefail
 
 readonly APPLICATION_ID="dev.qwerio.Qwerio"
@@ -19,6 +20,7 @@ fi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 binary="$1"
 output="$2"
+package_suffix="${QWERIO_PACKAGE_SUFFIX:-}"
 arch="$(uname -m)"
 
 if [[ "$arch" != "x86_64" ]]; then
@@ -58,4 +60,4 @@ mkdir -p "$output"
 # Extract-and-run avoids needing FUSE on build machines. appimagetool's
 # AppStream check fails on warnings (no homepage yet), so it is skipped.
 ARCH="$arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" --no-appstream \
-  "$appdir" "$output/Qwerio-$version-$arch.AppImage"
+  "$appdir" "$output/Qwerio$package_suffix-$version-$arch.AppImage"

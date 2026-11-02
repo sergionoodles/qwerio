@@ -4,6 +4,7 @@
 # See https://github.com/sergionoodles/gpui-tui/blob/main/GPUI-TUI-OVER-SSH.md.
 #
 # Usage: scripts/package-linux-over-ssh.sh <path to qwerio binary> <output directory>
+# Set QWERIO_PACKAGE_SUFFIX=-fast to keep variants distinct in a release.
 set -euo pipefail
 
 readonly MAX_GLIBC="2.35"
@@ -16,6 +17,7 @@ fi
 root="$(cd "$(dirname "$0")/.." && pwd)"
 binary="$1"
 output="$2"
+package_suffix="${QWERIO_PACKAGE_SUFFIX:-}"
 arch="$(uname -m)"
 
 if [[ "$arch" != "x86_64" ]]; then
@@ -43,7 +45,7 @@ version="$(cargo metadata --manifest-path "$root/Cargo.toml" --no-deps --format-
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-package="qwerio-linux-over-ssh-$version-$arch"
+package="qwerio-linux-over-ssh$package_suffix-$version-$arch"
 install -Dm755 "$binary" "$work/$package/qwerio"
 install -Dm644 "$root/LICENSE" "$work/$package/LICENSE"
 
