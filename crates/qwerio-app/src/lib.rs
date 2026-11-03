@@ -17,6 +17,7 @@ pub mod row_selection;
 pub mod schema;
 pub mod services;
 pub mod sessions;
+pub mod sql_script;
 pub mod table;
 pub mod table_edit_session;
 pub mod table_edits;

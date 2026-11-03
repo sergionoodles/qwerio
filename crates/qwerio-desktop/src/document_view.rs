@@ -12,7 +12,8 @@ use gpui_kit::component::resizable::{resizable_panel, v_resizable};
 use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::TextView;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex, v_flex,
+    ActiveTheme as _, Disableable as _, Icon, IconName, Sizable as _, WindowExt as _, h_flex,
+    v_flex,
 };
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -32,8 +33,8 @@ use qwerio_workspace::explorer::{Location, ScratchId};
 use qwerio_workspace::manifest::{DocumentId, ExecutionBinding};
 
 use crate::actions::{
-    BeginTransaction, CancelStatement, CommitTransaction, RollbackTransaction, RunStatement,
-    SQL_DOCUMENT_CONTEXT, Save, TogglePreview,
+    BeginTransaction, CancelStatement, CommitTransaction, RollbackTransaction, RunAllStatements,
+    RunStatement, SQL_DOCUMENT_CONTEXT, Save, TogglePreview,
 };
 use crate::content::ContentEvent;
 use crate::sql_console::{ConsoleEvent, SqlConsole, TransactionCommand};
@@ -575,6 +576,15 @@ impl DocumentView {
         }
     }
 
+    fn run_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(console) = self.console.clone() else {
+            return;
+        };
+
+        let sql = self.editor.read(cx).value().to_string();
+        console.update(cx, |console, cx| console.run_all(sql, window, cx));
+    }
+
     pub fn shut_down(&mut self, cx: &mut Context<Self>) {
         if let Some(console) = &self.console {
             console.update(cx, |console, cx| console.shut_down(cx));
@@ -683,6 +693,16 @@ impl DocumentView {
                         .on_click(
                             cx.listener(|this, _, window, cx| this.run_statement(window, cx)),
                         ),
+                )
+                .child(
+                    Button::new("run-all")
+                        .small()
+                        .outline()
+                        .icon(Icon::new(gpui_kit::assets::IconName::FastForward))
+                        .label("Run All")
+                        .disabled(is_running)
+                        .tooltip("Run every statement in order; stop on the first error")
+                        .on_click(cx.listener(|this, _, window, cx| this.run_all(window, cx))),
                 )
             })
             .when(self.kind == DocumentKind::Markdown, |this| {
@@ -863,6 +883,9 @@ impl Render for DocumentView {
             .on_action(cx.listener(|this, _: &Save, window, cx| this.save(None, window, cx)))
             .on_action(
                 cx.listener(|this, _: &RunStatement, window, cx| this.run_statement(window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &RunAllStatements, window, cx| this.run_all(window, cx)),
             )
             .on_action(cx.listener(|this, _: &CancelStatement, _, cx| {
                 if let Some(console) = &this.console {
