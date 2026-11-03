@@ -1675,6 +1675,7 @@ fn palette_commands() -> Vec<(&'static str, Box<dyn Action>)> {
         ("Refresh", Box::new(Refresh)),
         ("Save", Box::new(Save)),
         ("Run Statement", Box::new(RunStatement)),
+        ("Run All", Box::new(RunAllStatements)),
         ("Cancel Statement", Box::new(CancelStatement)),
         ("Begin Transaction", Box::new(BeginTransaction)),
         ("Commit", Box::new(CommitTransaction)),

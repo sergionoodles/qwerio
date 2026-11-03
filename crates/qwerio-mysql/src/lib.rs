@@ -160,6 +160,9 @@ impl DatabaseDriver for MysqlDriver {
                     .query_first("SELECT VERSION()")
                     .await
                     .map_err(error::map_error)?;
+                // The handshake's status is private in mysql_async. PING
+                // exposes the initial quoting mode through its public OK packet.
+                connection.ping().await.map_err(error::map_error)?;
                 Ok::<_, DatabaseError>((connection, version))
             })
             .await

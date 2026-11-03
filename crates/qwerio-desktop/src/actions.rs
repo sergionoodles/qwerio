@@ -42,6 +42,7 @@ actions!(
         DuplicateRow,
         DeleteRow,
         RunStatement,
+        RunAllStatements,
         CancelStatement,
         BeginTransaction,
         CommitTransaction,
@@ -121,10 +122,17 @@ pub fn bind_keys(cx: &mut App) {
         key_binding("secondary-,", OpenSettings, workbench, cx),
         key_binding("secondary-q", Quit, None, cx),
         key_binding("secondary-enter", RunStatement, sql, cx),
+        key_binding("secondary-shift-enter", RunAllStatements, sql, cx),
         // Select consumes its own Confirm action before the document binding can run.
         key_binding(
             "secondary-enter",
             RunStatement,
+            Some(&sql_select_context),
+            cx,
+        ),
+        key_binding(
+            "secondary-shift-enter",
+            RunAllStatements,
             Some(&sql_select_context),
             cx,
         ),
@@ -211,6 +219,7 @@ pub fn application_menus() -> Vec<Menu> {
             name: "Query".into(),
             items: vec![
                 MenuItem::action("Run Statement", RunStatement),
+                MenuItem::action("Run All", RunAllStatements),
                 MenuItem::action("Cancel", CancelStatement),
                 MenuItem::separator(),
                 MenuItem::action("Begin Transaction", BeginTransaction),

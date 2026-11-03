@@ -40,6 +40,7 @@ gpui_kit::assets::icon_assets!(
         Table2,
         Sheet,
         FileCode,
+        FastForward,
         FilePlus,
         FolderPlus,
         Server,

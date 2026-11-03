@@ -24,6 +24,7 @@ use gpui_kit::{
 };
 use qwerio_app::console::{ConsoleState, ExecutionTarget, RunOutcome};
 use qwerio_app::sessions::ConsoleLease;
+use qwerio_app::sql_script::{MysqlSqlMode, SqlRun};
 use qwerio_core::driver::QueryRequest;
 use qwerio_core::ids::ConnectionId;
 use qwerio_core::result::RequestEventKind;
@@ -54,6 +55,8 @@ pub struct SqlConsole {
     access: Option<AccessMode>,
     results: Entity<TableState<ResultGridDelegate>>,
     is_opening: bool,
+    is_executing: bool,
+    run: Option<SqlRun>,
     notice: Option<SharedString>,
     last_span: Option<SourceSpan>,
     run_task: Option<Task<()>>,
@@ -109,6 +112,8 @@ impl SqlConsole {
             access: None,
             results,
             is_opening: false,
+            is_executing: false,
+            run: None,
             notice: None,
             last_span: None,
             run_task: None,
@@ -215,7 +220,7 @@ impl SqlConsole {
     }
 
     pub fn is_running(&self) -> bool {
-        self.state.is_running()
+        self.is_executing
     }
 
     /// A short description of the target and state for the status bar.
@@ -244,7 +249,7 @@ impl SqlConsole {
     }
 
     pub fn needs_confirmation_to_close(&self) -> bool {
-        self.state.needs_confirmation_to_close()
+        self.is_executing || self.state.needs_confirmation_to_close()
     }
 
     fn set_access(&mut self, access: AccessMode, cx: &mut Context<Self>) {
@@ -263,7 +268,44 @@ impl SqlConsole {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.state.is_running() || self.is_opening {
+        self.start_run(SqlRun::statement(sql, span_start), window, cx);
+    }
+
+    /// Runs the whole editor as a script, regardless of the selection.
+    pub fn run_all(&mut self, sql: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_executing {
+            return;
+        }
+
+        let engine = self.selected_connection(cx).and_then(|connection| {
+            self.model
+                .read(cx)
+                .manifest()
+                .connection(connection)
+                .map(|alias| alias.engine)
+        });
+        let Some(engine) = engine else {
+            self.notice = Some("Choose the connection this document runs on.".into());
+            cx.notify();
+            return;
+        };
+
+        match SqlRun::script(&sql, engine) {
+            Ok(run) => self.start_run(run, window, cx),
+            Err(error) => {
+                self.notice = Some(error.message.into());
+                if let Some(position) = error.position {
+                    cx.emit(ConsoleEvent::SelectRange(
+                        position.byte_offset..position.byte_offset + 1,
+                    ));
+                }
+                cx.notify();
+            }
+        }
+    }
+
+    fn start_run(&mut self, run: SqlRun, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_executing {
             return;
         }
 
@@ -287,76 +329,157 @@ impl SqlConsole {
         }
 
         self.remember_binding(&target, cx);
-        self.last_span = Some(SourceSpan { start: span_start });
-
+        self.run = Some(run);
         let lease = self.lease_for(target.clone(), cx);
         self.is_opening = true;
+        self.is_executing = true;
         self.notice = None;
         cx.notify();
 
+        self.run_with_lease(target, lease, window, cx);
+    }
+
+    fn run_with_lease(
+        &mut self,
+        target: ExecutionTarget,
+        lease: Task<Result<Option<ConsoleLease>, SharedString>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.run_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let lease = match lease.await {
-                Ok(lease) => lease,
-                Err(error) => {
-                    this.update(cx, |this, cx| {
-                        this.is_opening = false;
+            let lease = lease.await;
+            let opened = this.update(cx, |this, cx| {
+                this.is_opening = false;
+                match lease {
+                    Ok(lease) => {
+                        if let Some(lease) = lease {
+                            this.lease = Some((target, lease));
+                        }
+                        true
+                    }
+                    Err(error) => {
+                        this.is_executing = false;
                         this.notice = Some(error);
                         cx.notify();
-                    })
-                    .ok();
-                    return;
-                }
-            };
-
-            let request = QueryRequest::new(sql);
-            let started = this.update(cx, |this, cx| {
-                this.is_opening = false;
-
-                if let Some(lease) = lease {
-                    this.lease = Some((target.clone(), lease));
-                }
-
-                let session = this
-                    .lease
-                    .as_ref()
-                    .map(|(_, lease)| Arc::clone(lease.session()))?;
-                let stream = match session.execute(request.clone()) {
-                    Ok(stream) => stream,
-                    Err(error) => {
-                        this.notice = Some(error.message.into());
-                        cx.notify();
-                        return None;
+                        false
                     }
+                }
+            });
+            if !matches!(opened, Ok(true)) {
+                return;
+            }
+
+            loop {
+                let started = this.update(cx, |this, cx| this.start_next_statement(cx));
+                let Ok(Some(mut stream)) = started else {
+                    break;
                 };
 
-                this.state.start(
-                    request.id,
-                    request.sql.clone(),
-                    Instant::now(),
-                    SystemTime::now(),
-                );
-                this.results.update(cx, |results, cx| {
-                    results.delegate_mut().set_empty_message("Running…");
-                    cx.notify();
+                while let Some(event) = stream.events.recv().await {
+                    let is_finished = matches!(event.kind, RequestEventKind::Finished { .. });
+                    let applied =
+                        this.update_in(cx, |this, window, cx| this.apply_event(event, window, cx));
+                    if applied.is_err() || is_finished {
+                        break;
+                    }
+                }
+
+                // A dropped stream without Finished cannot safely advance the script.
+                let ended = this.update_in(cx, |this, window, cx| {
+                    this.finish_interrupted_stream(window, cx)
                 });
-                cx.emit(ContentEvent::Changed);
-                cx.notify();
-                Some(stream)
-            });
-
-            let Ok(Some(mut stream)) = started else {
-                return;
-            };
-
-            while let Some(event) = stream.events.recv().await {
-                let applied =
-                    this.update_in(cx, |this, window, cx| this.apply_event(event, window, cx));
-
-                if applied.is_err() {
+                if ended.is_err() {
                     break;
                 }
             }
+
+            this.update(cx, |this, cx| {
+                this.is_executing = false;
+                cx.emit(ContentEvent::Changed);
+                cx.notify();
+            })
+            .ok();
         }));
+    }
+
+    fn finish_interrupted_stream(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(request_id) = self.state.running_request() else {
+            return;
+        };
+
+        let error = qwerio_core::error::DatabaseError::new(
+            qwerio_core::error::ErrorKind::Connection,
+            "The statement's result stream ended unexpectedly",
+        );
+        for kind in [
+            RequestEventKind::Failed(error),
+            RequestEventKind::Finished {
+                transaction: TransactionState::Unknown,
+            },
+        ] {
+            self.apply_event(
+                qwerio_core::result::RequestEvent {
+                    request_id,
+                    sequence: 0,
+                    kind,
+                },
+                window,
+                cx,
+            );
+        }
+    }
+
+    fn start_next_statement(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<qwerio_core::result::ResultStream> {
+        let session = self
+            .lease
+            .as_ref()
+            .map(|(_, lease)| Arc::clone(lease.session()))?;
+        let mode = MysqlSqlMode {
+            no_backslash_escapes: session.has_no_backslash_escapes(),
+        };
+        let run = self.run.as_mut()?;
+        let statement = match run.next_statement(mode) {
+            Ok(statement) => statement?,
+            Err(error) => {
+                run.stop();
+                self.notice = Some(error.message.into());
+                if let Some(position) = error.position {
+                    cx.emit(ConsoleEvent::SelectRange(
+                        position.byte_offset..position.byte_offset + 1,
+                    ));
+                }
+                cx.notify();
+                return None;
+            }
+        };
+        let request = QueryRequest::new(statement.sql);
+        self.last_span = Some(SourceSpan {
+            start: statement.start,
+        });
+        let stream = match session.execute(request.clone()) {
+            Ok(stream) => stream,
+            Err(error) => {
+                self.notice = Some(error.message.into());
+                if let Some(run) = &mut self.run {
+                    run.stop();
+                }
+                cx.notify();
+                return None;
+            }
+        };
+
+        self.state
+            .start(request.id, request.sql, Instant::now(), SystemTime::now());
+        self.results.update(cx, |results, cx| {
+            results.delegate_mut().set_empty_message("Running…");
+            cx.notify();
+        });
+        cx.emit(ContentEvent::Changed);
+        cx.notify();
+        Some(stream)
     }
 
     /// The open session for `target`, or a task opening one. `Ok(None)`
@@ -472,6 +595,9 @@ impl SqlConsole {
         }
 
         if let Some(completion) = completion {
+            if let Some(run) = &mut self.run {
+                run.complete_statement(&completion.run.outcome);
+            }
             if let RunOutcome::Failed(error) = &completion.run.outcome
                 && let (Some(position), Some(span)) = (error.position, self.last_span)
             {
@@ -500,7 +626,16 @@ impl SqlConsole {
     }
 
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        if !self.is_executing {
+            return;
+        }
+
+        if let Some(run) = &mut self.run {
+            run.stop();
+        }
         let (Some(request), Some((_, lease))) = (self.state.running_request(), &self.lease) else {
+            self.notice = Some("Cancelled before the next statement".into());
+            cx.notify();
             return;
         };
 
@@ -529,7 +664,7 @@ impl SqlConsole {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.state.is_running() {
+        if self.is_executing {
             return;
         }
 
@@ -585,6 +720,9 @@ impl SqlConsole {
 
     /// Ends the session, rolling back any open transaction.
     pub fn shut_down(&mut self, cx: &mut Context<Self>) {
+        if let Some(run) = &mut self.run {
+            run.stop();
+        }
         if let Some((_, lease)) = self.lease.take() {
             let session = Arc::clone(lease.session());
             cx.background_spawn(async move {
@@ -616,6 +754,16 @@ impl SqlConsole {
             }
         };
 
+        let text = match self.run.as_ref().filter(|run| run.is_script()) {
+            Some(run) if self.notice.is_none() && !self.is_opening => describe_script_progress(
+                run,
+                &text,
+                self.is_executing && !self.state.is_cancel_requested(),
+            )
+            .into(),
+            _ => text,
+        };
+
         div()
             .id("console-status")
             .text_sm()
@@ -637,6 +785,22 @@ pub enum TransactionCommand {
     Begin,
     Commit,
     Rollback,
+}
+
+fn describe_script_progress(run: &SqlRun, status: &str, is_executing: bool) -> String {
+    if is_executing {
+        let total = run
+            .total()
+            .map(|total| format!(" of {total}"))
+            .unwrap_or_default();
+        return format!("Running statement {}{total}…", run.started());
+    }
+
+    let total = run
+        .total()
+        .map(|total| format!("/{total}"))
+        .unwrap_or_default();
+    format!("{}{total} statements completed · {status}", run.completed())
 }
 
 fn describe_run(run: &qwerio_app::console::FinishedRun) -> (SharedString, bool) {
@@ -678,7 +842,7 @@ impl Render for SqlConsole {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let has_databases = self.selected_connection_has_databases(cx);
         let transaction = self.state.transaction();
-        let is_running = self.state.is_running();
+        let is_running = self.is_executing;
         let access = self.access;
 
         let transaction_label: Option<(SharedString, bool)> = match transaction {

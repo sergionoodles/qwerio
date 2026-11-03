@@ -14,6 +14,14 @@ use qwerio_core::session::TransactionState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+pub(crate) fn has_no_backslash_escapes(connection: &Conn) -> bool {
+    connection.last_ok_packet().is_some_and(|packet| {
+        packet
+            .status_flags()
+            .contains(mysql_async::consts::StatusFlags::SERVER_STATUS_NO_BACKSLASH_ESCAPES)
+    })
+}
+
 pub(crate) async fn transaction_state(connection: &mut Conn) -> TransactionState {
     // COM_PING obtains fresh status even after an error cleared the last OK
     // packet. It neither starts nor commits a transaction.
