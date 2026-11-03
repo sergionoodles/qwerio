@@ -1,34 +1,72 @@
 use qwerio_core::connection::EngineKind;
 use qwerio_core::error::{DatabaseError, DbResult, ErrorKind};
 
-use super::ScriptStatement;
+use super::boundary::StatementBoundary;
+use super::{MysqlSqlMode, ScriptStatement};
 
-pub(super) fn statements(sql: &str, engine: EngineKind) -> DbResult<Vec<ScriptStatement>> {
-    Splitter::new(sql, engine).split()
+pub(super) fn statements(
+    sql: &str,
+    engine: EngineKind,
+    mode: MysqlSqlMode,
+) -> DbResult<Vec<ScriptStatement>> {
+    let mut splitter = Splitter::new(sql, engine, mode, ";");
+    let mut statements = Vec::new();
+    while let Some(statement) = splitter.next_statement()? {
+        statements.push(statement);
+    }
+    if statements.is_empty() {
+        return Err(DatabaseError::new(
+            ErrorKind::EmptyStatement,
+            "There is no statement to run",
+        ));
+    }
+
+    Ok(statements)
+}
+
+pub(super) struct NextStatement {
+    pub statement: Option<ScriptStatement>,
+    pub consumed: usize,
+    pub delimiter: String,
+}
+
+pub(super) fn next_mysql_statement(
+    sql: &str,
+    engine: EngineKind,
+    mode: MysqlSqlMode,
+    delimiter: &str,
+) -> DbResult<NextStatement> {
+    let mut splitter = Splitter::new(sql, engine, mode, delimiter);
+    let statement = splitter.next_statement()?;
+    Ok(NextStatement {
+        statement,
+        consumed: splitter.index,
+        delimiter: splitter.delimiter,
+    })
 }
 
 struct Splitter<'a> {
     sql: &'a str,
     engine: EngineKind,
+    mode: MysqlSqlMode,
     delimiter: String,
+    index: usize,
     start: usize,
     has_text: bool,
-    keywords: Vec<String>,
-    trigger_depth: usize,
-    statements: Vec<ScriptStatement>,
+    boundary: StatementBoundary,
 }
 
 impl<'a> Splitter<'a> {
-    fn new(sql: &'a str, engine: EngineKind) -> Self {
+    fn new(sql: &'a str, engine: EngineKind, mode: MysqlSqlMode, delimiter: &str) -> Self {
         Self {
             sql,
             engine,
-            delimiter: ";".to_owned(),
+            mode,
+            delimiter: delimiter.to_owned(),
+            index: 0,
             start: 0,
             has_text: false,
-            keywords: Vec::new(),
-            trigger_depth: 0,
-            statements: Vec::new(),
+            boundary: StatementBoundary::new(engine),
         }
     }
 
@@ -36,34 +74,43 @@ impl<'a> Splitter<'a> {
         matches!(self.engine, EngineKind::Mysql | EngineKind::Mariadb)
     }
 
-    fn split(mut self) -> DbResult<Vec<ScriptStatement>> {
+    fn next_statement(&mut self) -> DbResult<Option<ScriptStatement>> {
         let bytes = self.sql.as_bytes();
-        let mut index = 0;
 
-        while index < bytes.len() {
+        while self.index < bytes.len() {
+            let index = self.index;
             let byte = bytes[index];
-            if self.trigger_depth == 0 && bytes[index..].starts_with(self.delimiter.as_bytes()) {
+            if bytes[index..].starts_with(self.delimiter.as_bytes()) {
                 let end = index + self.delimiter.len();
-                self.push(if self.delimiter == ";" { end } else { index });
-                self.start = end;
-                index = end;
+                self.index = end;
+                if self.boundary.record_delimiter() {
+                    let statement =
+                        self.take_statement(if self.delimiter == ";" { end } else { index });
+                    self.start = end;
+                    if statement.is_some() {
+                        return Ok(statement);
+                    }
+                }
             } else if byte.is_ascii_whitespace() {
-                index += 1;
+                self.index += 1;
             } else if self.is_line_comment(index) {
-                index = self.line_end(index);
+                self.index = self.line_end(index);
             } else if bytes[index..].starts_with(b"/*") {
                 self.has_text |= self.is_mysql()
                     && (bytes.get(index + 2) == Some(&b'!')
                         || bytes.get(index + 2..index + 4) == Some(b"M!"));
-                index = self.block_comment_end(index)?;
-            } else if matches!(byte, b'\'' | b'"' | b'`') {
-                self.has_text = true;
+                self.index = self.block_comment_end(index)?;
+            } else if matches!(byte, b'\'' | b'"')
+                || (byte == b'`' && self.engine != EngineKind::Postgres)
+            {
+                self.record_other(byte);
                 let backslash = byte != b'`'
-                    && (self.is_mysql() || (byte == b'\'' && self.is_escape_string(index)));
-                index = self.quote_end(index, byte, backslash)?;
+                    && ((self.is_mysql() && !self.mode.no_backslash_escapes)
+                        || (byte == b'\'' && self.is_escape_string(index)));
+                self.index = self.quote_end(index, byte, backslash)?;
             } else if byte == b'[' && self.engine == EngineKind::Sqlite {
-                self.has_text = true;
-                index = bytes[index + 1..]
+                self.record_other(byte);
+                self.index = bytes[index + 1..]
                     .iter()
                     .position(|byte| *byte == b']')
                     .map(|offset| index + offset + 2)
@@ -72,8 +119,8 @@ impl<'a> Splitter<'a> {
                 && self.engine == EngineKind::Postgres
                 && let Some(end) = self.dollar_quote_end(index)?
             {
-                self.has_text = true;
-                index = end;
+                self.record_other(byte);
+                self.index = end;
             } else if is_word_start(byte) {
                 let mut end = index + 1;
                 while end < bytes.len()
@@ -84,71 +131,36 @@ impl<'a> Splitter<'a> {
                 }
                 let word = &self.sql[index..end];
                 if !self.has_text && self.is_mysql() && word.eq_ignore_ascii_case("DELIMITER") {
-                    index = self.set_delimiter(end)?;
-                    self.start = index;
+                    self.index = self.set_delimiter(end)?;
+                    self.start = self.index;
                 } else {
-                    self.record_word(word);
-                    index = end;
+                    self.has_text = true;
+                    self.boundary.record_word(word);
+                    self.index = end;
                 }
             } else {
-                self.has_text = true;
-                index += 1;
+                self.record_other(byte);
+                self.index += 1;
             }
         }
 
-        self.push(bytes.len());
-        if self.statements.is_empty() {
-            return Err(DatabaseError::new(
-                ErrorKind::EmptyStatement,
-                "There is no statement to run",
-            ));
-        }
-
-        Ok(self.statements)
+        Ok(self.take_statement(bytes.len()))
     }
 
-    fn push(&mut self, end: usize) {
-        if self.has_text {
-            self.statements.push(ScriptStatement {
-                sql: self.sql[self.start..end].to_owned(),
-                start: self.start,
-            });
-        }
+    fn take_statement(&mut self, end: usize) -> Option<ScriptStatement> {
+        let statement = self.has_text.then(|| ScriptStatement {
+            sql: self.sql[self.start..end].to_owned(),
+            start: self.start,
+        });
 
         self.has_text = false;
-        self.keywords.clear();
-        self.trigger_depth = 0;
+        self.boundary = StatementBoundary::new(self.engine);
+        statement
     }
 
-    fn record_word(&mut self, word: &str) {
+    fn record_other(&mut self, byte: u8) {
         self.has_text = true;
-        if self.engine != EngineKind::Sqlite {
-            return;
-        }
-
-        if self.keywords.len() < 3 {
-            self.keywords.push(word.to_ascii_uppercase());
-        }
-
-        let is_trigger = self.keywords.first().is_some_and(|word| word == "CREATE")
-            && (self.keywords.get(1).is_some_and(|word| word == "TRIGGER")
-                || (self
-                    .keywords
-                    .get(1)
-                    .is_some_and(|word| matches!(word.as_str(), "TEMP" | "TEMPORARY"))
-                    && self.keywords.get(2).is_some_and(|word| word == "TRIGGER")));
-        if !is_trigger {
-            return;
-        }
-
-        // CASE expressions have their own END inside a trigger's BEGIN/END.
-        if word.eq_ignore_ascii_case("BEGIN")
-            || (self.trigger_depth > 0 && word.eq_ignore_ascii_case("CASE"))
-        {
-            self.trigger_depth += 1;
-        } else if word.eq_ignore_ascii_case("END") {
-            self.trigger_depth = self.trigger_depth.saturating_sub(1);
-        }
+        self.boundary.record_other(byte);
     }
 
     fn is_line_comment(&self, index: usize) -> bool {

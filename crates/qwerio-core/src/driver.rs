@@ -113,6 +113,12 @@ pub trait DatabaseSession: DatabaseCatalog + TableBrowser + TableEditor {
     /// immediately with `SessionBusy` while another request runs.
     fn execute(&self, request: QueryRequest) -> DbResult<ResultStream>;
 
+    /// The current MySQL/MariaDB NO_BACKSLASH_ESCAPES mode. Updated before
+    /// Finished so script splitting can follow changes on the retained session.
+    fn has_no_backslash_escapes(&self) -> bool {
+        false
+    }
+
     /// Runs one typed administration mutation. Adapters may use a different
     /// protocol for commands their prepared-statement API does not support.
     /// Call `permissions::apply` for version, scope, and password-safe errors.

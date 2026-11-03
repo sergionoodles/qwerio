@@ -38,6 +38,7 @@ pub(crate) struct MysqlSession {
 struct SharedState {
     active: StdMutex<Option<RequestId>>,
     cancelled: AtomicBool,
+    no_backslash_escapes: AtomicBool,
     transaction: AtomicU8,
     // No request may finish (and allow a new query) while KILL is in flight.
     cancellation_fence: Mutex<()>,
@@ -91,6 +92,7 @@ impl MysqlSession {
         timeout: Option<Duration>,
         visible_database: Option<String>,
     ) -> Self {
+        let no_backslash_escapes = execute::has_no_backslash_escapes(&client);
         Self {
             info,
             visible_database,
@@ -102,6 +104,7 @@ impl MysqlSession {
             state: Arc::new(SharedState {
                 active: StdMutex::new(None),
                 cancelled: AtomicBool::new(false),
+                no_backslash_escapes: AtomicBool::new(no_backslash_escapes),
                 transaction: AtomicU8::new(0),
                 cancellation_fence: Mutex::new(()),
             }),
@@ -132,6 +135,9 @@ impl MysqlSession {
             Box::pin(async move {
                 let outcome = client.query_drop(sql).await.map_err(map_error);
                 let transaction = execute::transaction_state(client).await;
+                state
+                    .no_backslash_escapes
+                    .store(execute::has_no_backslash_escapes(client), Ordering::SeqCst);
                 state.set_transaction(transaction);
                 outcome?;
                 Ok(transaction)
@@ -259,7 +265,13 @@ impl DatabaseSession for MysqlSession {
                 Ok(()) => {}
             }
             let transaction = match guard.as_mut() {
-                Some(client) => execute::transaction_state(client).await,
+                Some(client) => {
+                    let transaction = execute::transaction_state(client).await;
+                    state
+                        .no_backslash_escapes
+                        .store(execute::has_no_backslash_escapes(client), Ordering::SeqCst);
+                    transaction
+                }
                 None => TransactionState::Unknown,
             };
             state.set_transaction(transaction);
@@ -270,6 +282,10 @@ impl DatabaseSession for MysqlSession {
                 .await;
         });
         Ok(stream)
+    }
+
+    fn has_no_backslash_escapes(&self) -> bool {
+        self.state.no_backslash_escapes.load(Ordering::SeqCst)
     }
 
     async fn apply_permission_change(
@@ -296,6 +312,7 @@ impl DatabaseSession for MysqlSession {
             // Only typed, quoted administration SQL reaches the text protocol.
             // Never fall back for arbitrary SQL: it can contain extra statements.
             client.query_drop("SET SESSION sql_mode = CONCAT_WS(',', NULLIF(@@SESSION.sql_mode, ''), 'NO_BACKSLASH_ESCAPES')").await.map_err(map_error)?;
+            state.no_backslash_escapes.store(execute::has_no_backslash_escapes(client), Ordering::SeqCst);
             let literal_database_names = if engine == qwerio_core::connection::EngineKind::Mysql {
                 let variable: Option<(String, String)> = client.query_first("SHOW GLOBAL VARIABLES LIKE 'partial_revokes'").await.map_err(map_error)?;
                 variable.is_some_and(|(_, value)| value.eq_ignore_ascii_case("ON"))

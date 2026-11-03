@@ -1,12 +1,16 @@
 //! Sequential SQL execution plans. Every statement retains its document offset
 //! and uses the console's existing session, transaction, and result budget.
 
+mod boundary;
+mod mysql;
 mod split;
+
+pub use mysql::MysqlSqlMode;
 
 use std::collections::VecDeque;
 
 use qwerio_core::connection::EngineKind;
-use qwerio_core::error::DbResult;
+use qwerio_core::error::{DatabaseError, DbResult, ErrorKind};
 
 use crate::console::RunOutcome;
 
@@ -18,7 +22,8 @@ pub struct ScriptStatement {
 
 pub struct SqlRun {
     statements: VecDeque<ScriptStatement>,
-    total: usize,
+    mysql_script: Option<mysql::MysqlScript>,
+    total: Option<usize>,
     started: usize,
     completed: usize,
     is_active: bool,
@@ -31,16 +36,25 @@ impl SqlRun {
         Self::new(vec![ScriptStatement { sql, start }], false)
     }
 
-    /// Splits the whole document before executing any of it. Client delimiter
-    /// directives are supported for MySQL and MariaDB.
+    /// Validates fixed-dialect scripts up front. MySQL and MariaDB are split
+    /// as they advance because statements can change the session's SQL mode.
     pub fn script(sql: &str, engine: EngineKind) -> DbResult<Self> {
-        split::statements(sql, engine).map(|statements| Self::new(statements, true))
+        if matches!(engine, EngineKind::Mysql | EngineKind::Mariadb) {
+            return Ok(Self {
+                mysql_script: Some(mysql::MysqlScript::new(sql, engine)),
+                total: None,
+                ..Self::new(Vec::new(), true)
+            });
+        }
+        split::statements(sql, engine, MysqlSqlMode::default())
+            .map(|statements| Self::new(statements, true))
     }
 
     fn new(statements: Vec<ScriptStatement>, is_script: bool) -> Self {
         Self {
-            total: statements.len(),
+            total: Some(statements.len()),
             statements: statements.into(),
+            mysql_script: None,
             started: 0,
             completed: 0,
             is_active: false,
@@ -51,15 +65,28 @@ impl SqlRun {
 
     /// The next statement is available only after the previous request's
     /// Finished event, when the session can accept another request.
-    pub fn next_statement(&mut self) -> Option<ScriptStatement> {
+    pub fn next_statement(&mut self, mode: MysqlSqlMode) -> DbResult<Option<ScriptStatement>> {
         if self.is_active || self.is_stopped {
-            return None;
+            return Ok(None);
         }
 
-        let statement = self.statements.pop_front()?;
+        let statement = match &mut self.mysql_script {
+            Some(script) => script.next_statement(mode)?,
+            None => self.statements.pop_front(),
+        };
+        let Some(statement) = statement else {
+            self.total = Some(self.started);
+            if self.started == 0 && self.is_script {
+                return Err(DatabaseError::new(
+                    ErrorKind::EmptyStatement,
+                    "There is no statement to run",
+                ));
+            }
+            return Ok(None);
+        };
         self.started += 1;
         self.is_active = true;
-        Some(statement)
+        Ok(Some(statement))
     }
 
     pub fn complete_statement(&mut self, outcome: &RunOutcome) {
@@ -85,7 +112,8 @@ impl SqlRun {
         self.is_script
     }
 
-    pub fn total(&self) -> usize {
+    /// MySQL's total is known only after its final statement is reached.
+    pub fn total(&self) -> Option<usize> {
         self.total
     }
 

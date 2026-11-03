@@ -24,7 +24,7 @@ use gpui_kit::{
 };
 use qwerio_app::console::{ConsoleState, ExecutionTarget, RunOutcome};
 use qwerio_app::sessions::ConsoleLease;
-use qwerio_app::sql_script::SqlRun;
+use qwerio_app::sql_script::{MysqlSqlMode, SqlRun};
 use qwerio_core::driver::QueryRequest;
 use qwerio_core::ids::ConnectionId;
 use qwerio_core::result::RequestEventKind;
@@ -433,11 +433,28 @@ impl SqlConsole {
         &mut self,
         cx: &mut Context<Self>,
     ) -> Option<qwerio_core::result::ResultStream> {
-        let statement = self.run.as_mut()?.next_statement()?;
         let session = self
             .lease
             .as_ref()
             .map(|(_, lease)| Arc::clone(lease.session()))?;
+        let mode = MysqlSqlMode {
+            no_backslash_escapes: session.has_no_backslash_escapes(),
+        };
+        let run = self.run.as_mut()?;
+        let statement = match run.next_statement(mode) {
+            Ok(statement) => statement?,
+            Err(error) => {
+                run.stop();
+                self.notice = Some(error.message.into());
+                if let Some(position) = error.position {
+                    cx.emit(ConsoleEvent::SelectRange(
+                        position.byte_offset..position.byte_offset + 1,
+                    ));
+                }
+                cx.notify();
+                return None;
+            }
+        };
         let request = QueryRequest::new(statement.sql);
         self.last_span = Some(SourceSpan {
             start: statement.start,
@@ -738,18 +755,12 @@ impl SqlConsole {
         };
 
         let text = match self.run.as_ref().filter(|run| run.is_script()) {
-            Some(run) if self.notice.is_none() && !self.is_opening => {
-                if self.is_executing && !self.state.is_cancel_requested() {
-                    format!("Running statement {} of {}…", run.started(), run.total()).into()
-                } else {
-                    format!(
-                        "{}/{} statements completed · {text}",
-                        run.completed(),
-                        run.total()
-                    )
-                    .into()
-                }
-            }
+            Some(run) if self.notice.is_none() && !self.is_opening => describe_script_progress(
+                run,
+                &text,
+                self.is_executing && !self.state.is_cancel_requested(),
+            )
+            .into(),
             _ => text,
         };
 
@@ -774,6 +785,22 @@ pub enum TransactionCommand {
     Begin,
     Commit,
     Rollback,
+}
+
+fn describe_script_progress(run: &SqlRun, status: &str, is_executing: bool) -> String {
+    if is_executing {
+        let total = run
+            .total()
+            .map(|total| format!(" of {total}"))
+            .unwrap_or_default();
+        return format!("Running statement {}{total}…", run.started());
+    }
+
+    let total = run
+        .total()
+        .map(|total| format!("/{total}"))
+        .unwrap_or_default();
+    format!("{}{total} statements completed · {status}", run.completed())
 }
 
 fn describe_run(run: &qwerio_app::console::FinishedRun) -> (SharedString, bool) {
